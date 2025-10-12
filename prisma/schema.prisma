@@ -1,0 +1,94 @@
+// prisma/schema.prisma
+// Esquema de base de datos para el Chatbot del Supermercado La Inmaculada
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Categoria {
+  id          Int        @id @default(autoincrement())
+  nombre      String     @unique
+  descripcion String?
+  icono       String?    // emoji para el chatbot
+  orden       Int        @default(0)
+  activo      Boolean    @default(true)
+  productos   Producto[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@map("categorias")
+}
+
+model Producto {
+  id            Int       @id @default(autoincrement())
+  nombre        String
+  marca         String?
+  presentacion  String?   // "1L", "500g", "Unidad", etc.
+  precio        Float
+  precioOferta  Float?
+  stock         Int       @default(0)
+  enOferta      Boolean   @default(false)
+  activo        Boolean   @default(true)
+  categoriaId   Int
+  categoria     Categoria @relation(fields: [categoriaId], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([nombre])
+  @@index([categoriaId])
+  @@map("productos")
+}
+
+model Conversacion {
+  id            Int      @id @default(autoincrement())
+  telefono      String
+  nombreCliente String?
+  mensaje       String
+  respuesta     String?
+  intencion     String?  // "consulta_producto", "horario", "ubicacion", etc.
+  fecha         DateTime @default(now())
+
+  @@index([telefono])
+  @@index([fecha])
+  @@map("conversaciones")
+}
+
+model Configuracion {
+  id          Int      @id @default(autoincrement())
+  clave       String   @unique
+  valor       String
+  descripcion String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("configuracion")
+}
+
+model Cliente {
+  id                Int      @id @default(autoincrement())
+  telefono          String   @unique
+  nombre            String?
+  ultimaInteraccion DateTime @default(now())
+  totalConsultas    Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([telefono])
+  @@map("clientes")
+}
+
+model MetricaDiaria {
+  id                    Int      @id @default(autoincrement())
+  fecha                 DateTime @unique
+  consultasTotales      Int      @default(0)
+  productosConsultados  Int      @default(0)
+  clientesUnicos        Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("metricas_diarias")
+}
