@@ -81,22 +81,42 @@ class AdvancedAIService {
       intents: {
         saludo: {
           patterns: [
-            /\b(hola|buenos|buenas|días|tardes|noches|hey|saludos|qué tal|cómo estás)\b/i,
-            /^hola/i, /^buen/i, /^buenas/i
+            /^hola$/i, /^hola\s/i, /^hola[!¡.,]?$/i,
+            /^buenos\s*d[ií]as/i, /^buenas\s*tardes/i, /^buenas\s*noches/i,
+            /^buenas$/i, /^hey$/i, /^saludos$/i, /^qué\s*tal/i, /^cómo\s*est[áa]s/i,
+            /^alo$/i, /^causita$/i, /^hola\s+pe$/i, /^buenas\s+pe$/i
           ],
           context: ['inicio_conversacion', 'retorno_cliente'],
-          priority: 1
+          priority: 5
+        },
+        
+        ver_catalogo: {
+          patterns: [
+            /\bqu[eé]\s+productos?\s+(tienen|tienes|hay|venden|disponibles?)\b/i,
+            /\bproductos?\s+(tienen|disponibles?)\b/i,
+            /\bqu[eé]\s+(tienen|tienes|hay|venden)\s+(disponibles?|para\s+vender)?\b/i,
+            /\b(qu[eé]\s+venden|que\s+hay|qu[eé]\s+hay)\b/i,
+            /\b(mostrar|ver|dame)\s+(productos?|cat[aá]logo|men[uú])\b/i,
+            /\b(qu[eé]\s+tienen|que\s+tienen)$/i,
+            /\bcat[aá]logo\b/i,
+            /\bqu[eé]\s+tienen\s+disponible/i,
+            /\bqu[eé]\s+cosas?\s+(tienen|hay|venden)\b/i,
+            /\bqu[eé]\s+tienen\s+para\s+vender\b/i
+          ],
+          context: ['catalogo', 'productos_general'],
+          priority: 6
         },
         
         consulta_producto: {
           patterns: [
-            /\b(tienen|hay|venden|tienes|hay|disponible|stock)\s+(.*)/i,
-            /\b(quiero|necesito|busco|deseo)\s+(.*)/i,
-            /\b(cuánto|cuesta|precio|valor)\s+(.*)/i,
-            /\b(dónde está|encuentro|está)\s+(.*)/i
+            // Excluir palabras genéricas como "disponibles", "productos", etc.
+            /\b(tienen|hay|venden|tienes|disponible|stock)\s+(?!productos?|disponibles?|para\s+vender)([a-záéíóúñ\s]+)/i,
+            /\b(necesito|busco|deseo)\s+(?!productos?|ver|catalogo)([a-záéíóúñ\s]+)/i,
+            /\b(cu[áa]nto\s+cuesta|precio\s+del?|valor\s+del?)\s+([a-záéíóúñ\s]+)/i,
+            /\b(tienes?|hay)\s+([a-záéíóúñ]{4,})\??$/i  // Mínimo 4 caracteres para evitar palabras cortas
           ],
           context: ['busqueda_producto', 'precio_producto', 'disponibilidad'],
-          priority: 2
+          priority: 3
         },
         
         comparacion_productos: {
@@ -137,11 +157,24 @@ class AdvancedAIService {
         
         pedido_compra: {
           patterns: [
-            /\b(quiero pedir|hacer pedido|ordenar|comprar)\s+(.*)/i,
-            /\b(me manda|envíame|trae me)\s+(.*)/i
+            /\b(quiero\s+pedir|hacer\s+pedido|ordenar|quiero\s+comprar)\s+(.+)/i,
+            /\b(me\s+manda|envíame|tráeme|mandame|mándame)\s+(.+)/i,
+            /\b(agregar\s+al\s+carrito|añadir\s+al\s+pedido)\s*(.*)/i,
+            /\b(pedir|ordenar)\s+(\d+)\s+(.+)/i
           ],
           context: ['pedido', 'compra', 'orden'],
-          priority: 3
+          priority: 4
+        },
+        
+        especificar_cantidad_explicita: {
+          patterns: [
+            /^(\d+)\s*(unidad|unidades|kg|kilos|litros|l|docena|docenas)?$/i,
+            /^(\d+)\s+quiero$/i, /^quiero\s+(\d+)$/i,
+            /^dame\s+(\d+)$/i, /^(\d+)\s+por\s+favor$/i,
+            /^(\d+)\s+(de\s+esos?|de\s+esas?|nomás|nomas)$/i
+          ],
+          context: ['cantidad', 'numero'],
+          priority: 6
         },
         
         quejas_sugerencias: {
@@ -415,6 +448,21 @@ class AdvancedAIService {
       }
     }
     
+    // NUEVO: Resolver conflictos entre ver_catalogo y consulta_producto
+    const verCatalogoIntent = intents.find(i => i.intention === 'ver_catalogo');
+    const consultaProductoIntent = intents.find(i => i.intention === 'consulta_producto');
+    
+    if (verCatalogoIntent && consultaProductoIntent) {
+      // Si el mensaje no menciona un producto específico, priorizar ver_catalogo
+      const productosGenerales = /\bproductos?\s*(disponibles?|tienen|hay)\b/i.test(lowerMessage);
+      const preguntaGeneral = /\bqu[eé]\s+(productos?|cosas?|tienen|venden)\b/i.test(lowerMessage);
+      
+      if (productosGenerales || preguntaGeneral) {
+        // Boost ver_catalogo
+        verCatalogoIntent.confidence = Math.min(verCatalogoIntent.confidence + 0.2, 0.98);
+      }
+    }
+    
     // Ordenar por confianza y tomar el mejor
     intents.sort((a, b) => b.confidence - a.confidence);
     
@@ -613,6 +661,49 @@ class AdvancedAIService {
           intention: 'especificar_cantidad',
           confidence: 0.98, // AUMENTADO de 0.95 a 0.98
           entities: { quantity: parseInt(lowerMessage), flow: 'order_quantity' },
+          context: ['pedido', 'cantidad']
+        };
+      }
+    }
+    
+    // NUEVO: Flujo seleccion_producto → cantidad
+    // Cuando el usuario ya seleccionó un producto y responde con cantidad
+    if (memory.lastIntent === 'seleccion_producto' || memory.lastIntent === 'seleccion_numerica') {
+      // Detectar números con o sin unidades
+      const quantityMatch = lowerMessage.match(/^(\d+)\s*(unidad|unidades|kg|kilos?|litros?|l|docenas?)?$/i);
+      if (quantityMatch) {
+        return {
+          intention: 'especificar_cantidad',
+          confidence: 0.98,
+          entities: { 
+            quantity: parseInt(quantityMatch[1]), 
+            unit: quantityMatch[2] || 'unidad',
+            flow: 'product_quantity' 
+          },
+          context: ['pedido', 'cantidad']
+        };
+      }
+      
+      // Detectar "X quiero" o "quiero X"
+      const quieroMatch = lowerMessage.match(/^(\d+)\s+quiero$|^quiero\s+(\d+)$/i);
+      if (quieroMatch) {
+        const quantity = parseInt(quieroMatch[1] || quieroMatch[2]);
+        return {
+          intention: 'especificar_cantidad',
+          confidence: 0.95,
+          entities: { quantity, flow: 'quiero_quantity' },
+          context: ['pedido', 'cantidad']
+        };
+      }
+      
+      // Detectar "dame X" o "X nomás"
+      const dameMatch = lowerMessage.match(/^dame\s+(\d+)|^(\d+)\s+(nom[aá]s|nomas)$/i);
+      if (dameMatch) {
+        const quantity = parseInt(dameMatch[1] || dameMatch[2]);
+        return {
+          intention: 'especificar_cantidad',
+          confidence: 0.95,
+          entities: { quantity, flow: 'dame_quantity' },
           context: ['pedido', 'cantidad']
         };
       }
@@ -1144,14 +1235,21 @@ class AdvancedAIService {
     // Actualizar memoria
     this.updateConversationMemory(customerPhone, intent, context);
     
-    // Manejo de multi-intento
+    // Manejo de multi-intento - solo si retorna respuesta válida
     if (intent.multiIntent && intent.alternativeIntents) {
-      return this.generateMultiIntentResponse(intent, context, memory);
+      const multiResponse = this.generateMultiIntentResponse(intent, context, memory);
+      if (multiResponse) {
+        return multiResponse;
+      }
+      // Si retorna null, continuar con el switch para manejar la intención principal
     }
     
     switch (intent.intention) {
       case 'saludo':
         return this.generateSaludoResponse(intent, context, memory);
+      
+      case 'ver_catalogo':
+        return await this.generateCatalogoResponse(intent, context, memory);
         
       case 'consulta_producto':
         return await this.generateProductConsultationResponse(intent, context, memory);
@@ -1190,6 +1288,7 @@ class AdvancedAIService {
         return this.generateSeleccionNumericaResponse(intent, context, memory);
         
       case 'especificar_cantidad':
+      case 'especificar_cantidad_explicita':
         return this.generateEspecificarCantidadResponse(intent, context, memory);
         
       case 'confirmacion_implicita':
@@ -1210,22 +1309,83 @@ class AdvancedAIService {
   }
 
   /**
-   * Genera respuesta para multi-intento
+   * Genera respuesta para multi-intento - MEJORADO para no confundir
+   * Solo mostrar si hay REAL ambigüedad, no en casos claros
    */
   generateMultiIntentResponse(intent, context, memory) {
+    // Si la intención principal tiene alta confianza, ignorar alternativas
+    if (intent.confidence > 0.7) {
+      // Procesar la intención principal sin mostrar alternativas
+      return null; // Retornar null para que el switch lo maneje
+    }
+    
     const alternatives = intent.alternativeIntents.map(i => i.intention).join(' o ');
     
     return `
-🤔 *Detecté múltiples intenciones en tu mensaje:*
+🤔 *¡Uy! Entendí varias cosas, causita* 😅
 
-Parece que estás preguntando sobre *${intent.intention}* y también mencionas *${alternatives}*.
+Parece que preguntas sobre *${this.humanizeIntent(intent.intention)}* pero también mencionas *${this.humanizeIntent(alternatives)}*.
 
-💡 ¿Podrías ayudarme a entender mejor? Por ejemplo:
-• Si quieres saber sobre ${intent.intention}, dime más detalles
-• Si prefieres ${alternatives}, cuéntame qué necesitas
+💡 ¿Me ayudas a entender mejor?
+• Si buscas un producto, dime el nombre
+• Si quieres hacer un pedido, cuéntame qué necesitas
 
-Estoy aquí para ayudarte con lo que necesites. 😊
+¡Estoy pa' servirte! 😊
     `.trim();
+  }
+  
+  /**
+   * Humaniza el nombre de la intención para mostrar al usuario
+   */
+  humanizeIntent(intentName) {
+    const humanNames = {
+      'pedido_compra': 'hacer un pedido',
+      'consulta_producto': 'buscar productos',
+      'horarios_servicio': 'horarios',
+      'ubicacion_tienda': 'ubicación',
+      'delivery_servicio': 'delivery',
+      'quejas_sugerencias': 'una queja',
+      'ver_catalogo': 'ver productos'
+    };
+    return humanNames[intentName] || intentName;
+  }
+  
+  /**
+   * Genera respuesta de catálogo/productos disponibles
+   */
+  async generateCatalogoResponse(intent, context, memory) {
+    await this.ensureCatalogLoaded();
+    
+    const categorias = this.businessContext.categorias_principales;
+    
+    let response = `🛒 *¡Claro que sí, causita!* Aquí te cuento qué tenemos:\n\n`;
+    
+    categorias.forEach((cat, index) => {
+      const emoji = this.getCategoryEmoji(cat.nombre);
+      response += `${emoji} *${cat.nombre}*\n`;
+      response += `   ${cat.productos_destacados.slice(0, 3).join(', ')}\n\n`;
+    });
+    
+    response += `💡 *¿Qué te provoca?* Dime el nombre del producto y te doy precio y stock.\n`;
+    response += `📱 También puedes decirme "quiero pedir [producto]" para hacer tu pedido.`;
+    
+    return response;
+  }
+  
+  /**
+   * Obtiene emoji para categoría
+   */
+  getCategoryEmoji(categoryName) {
+    const emojis = {
+      'Lácteos y Huevos': '🥛',
+      'Carnes y Pescados': '🍗',
+      'Verduras y Frutas': '🥬',
+      'Abarrotes': '🛒',
+      'Bebidas': '🥤',
+      'Limpieza': '🧹',
+      'Panadería': '🍞'
+    };
+    return emojis[categoryName] || '📦';
   }
 
   /**
@@ -1256,119 +1416,167 @@ ${selectedProduct.description ? `📝 ${selectedProduct.description}` : ''}
   }
 
   /**
-   * Genera respuesta de especificación de cantidad
+   * Genera respuesta de especificación de cantidad - HUMANIZADA
    */
   generateEspecificarCantidadResponse(intent, context, memory) {
     const quantity = intent.entities.quantity;
+    const unit = intent.entities.unit || 'unidad';
     const lastProducts = memory.lastProducts || [];
     
     if (lastProducts.length > 0) {
       const product = lastProducts[0]; // Producto más reciente
       
+      // Guardar en memoria del pedido actual
+      memory.currentOrder = memory.currentOrder || [];
+      
       if (product.stock >= quantity) {
+        const total = product.price * quantity;
+        
+        // Agregar al pedido en memoria
+        memory.currentOrder.push({
+          product: product,
+          quantity: quantity,
+          unit: unit,
+          subtotal: total
+        });
+        
         return `
-📦 *Cantidad confirmada:* ${quantity} unidad${quantity > 1 ? 'es' : ''}
+🛒 *¡Listo, causita!*
 
-Producto: *${product.name}*
-Precio unitario: S/ ${product.price.toFixed(2)}
-Total: S/ ${(product.price * quantity).toFixed(2)}
-Stock disponible: ${product.stock} unidades
+📦 *${product.name}*
+📋 Cantidad: ${quantity} ${unit}${quantity > 1 && unit === 'unidad' ? 'es' : ''}
+💰 Precio: S/ ${product.price.toFixed(2)} c/u
+💵 Total: S/ ${total.toFixed(2)}
 
-✅ ¿Confirmamos este producto?
-💳 ¿Te gustaría agregar algo más al pedido?
+✅ *¿Confirmamos?* Escribe "sí" o "confirmar"
+🛒 ¿Quieres agregar algo más? Dime qué producto
+❌ Para cancelar escribe "cancelar"
         `.trim();
       } else {
-        return `😔 Lo siento, solo tenemos ${product.stock} unidades de *${product.name}* disponibles. ¿Quieres esa cantidad o prefieres otro producto?`;
+        return `😅 *¡Uy, causita!* Solo nos quedan *${product.stock} unidades* de ${product.name}.\n\n¿Te parece esa cantidad? O dime otro producto que busques.`;
       }
     }
     
-    return `📦 Confirmaste ${quantity} unidad${quantity > 1 ? 'es' : ''}. ¿De qué producto?`;
+    return `📦 *Entendido, ${quantity} ${unit}${quantity > 1 ? 'es' : ''}* 👍\n\n¿De qué producto, causita?`;
   }
 
   /**
-   * Genera respuesta de confirmación implícita
+   * Genera respuesta de confirmación implícita - HUMANIZADA
    */
   generateConfirmacionImplicitaResponse(intent, context, memory) {
     const responses = [
-      '✅ ¡Perfecto! Continuemos.',
-      '👍 ¡Entendido! ¿Qué sigue?',
-      '✅ ¡Listo! ¿En qué más puedo ayudarte?',
-      '👌 ¡Confirmado! ¿Qué te gustaría hacer ahora?'
+      '✅ *¡Ya pe, causita!* ¿Qué más necesitas?',
+      '👍 *¡Listo!* ¿En qué más te ayudo?',
+      '✅ *¡Perfecto!* ¿Algo más que busques?',
+      '👌 *¡Dale!* Cuéntame qué más necesitas.'
     ];
     
     return responses[Math.floor(Math.random() * responses.length)];
   }
 
   /**
-   * Genera respuesta de negación implícita
+   * Genera respuesta de negación implícita - HUMANIZADA
    */
   generateNegacionImplicitaResponse(intent, context, memory) {
     const responses = [
-      '👍 No hay problema. ¿Qué prefieres entonces?',
-      '✅ Entendido. ¿Qué otra cosa te gustaría saber?',
-      '👌 Perfecto. ¿En qué más puedo ayudarte?',
-      '🔄 No te preocupes. ¿Qué necesitas?'
+      '👍 *No hay problema pe.* ¿Qué prefieres entonces?',
+      '✅ *Ya, entendido.* ¿Qué otra cosita buscas?',
+      '👌 *Dale, sin problema.* ¿Qué necesitas?',
+      '🔄 *Tranqui, causita.* Dime qué más te ofrezco.'
     ];
     
     return responses[Math.floor(Math.random() * responses.length)];
   }
 
   /**
-   * Genera respuesta de agradecimiento
+   * Genera respuesta de agradecimiento - HUMANIZADA
    */
   generateAgradecimientoResponse(intent, context, memory) {
     const responses = [
-      '😊 ¡Con mucho gusto! ¿En qué más puedo ayudarte?',
-      '✨ ¡Es un placer ayudarte! ¿Qué más necesitas?',
-      '🙏 ¡Gracias a ti por tu amabilidad! ¿En qué más puedo servirte?',
-      '😄 ¡Para eso estoy! ¿Qué más te gustaría saber?'
+      '😊 *¡De nada, causita!* Estamos pa\' servirte. ¿Algo más?',
+      '✨ *¡Con gusto!* ¿Qué más se te ofrece?',
+      '🙏 *¡Gracias a ti!* ¿En qué más te ayudo?',
+      '😄 *¡Pa\' eso estamos!* ¿Necesitas algo más?'
     ];
     
     return responses[Math.floor(Math.random() * responses.length)];
   }
 
   /**
-   * Genera respuesta de disculpa
+   * Genera respuesta de disculpa - HUMANIZADA
    */
   generateDisculpaResponse(intent, context, memory) {
     return `
-😊 *No te preocupes, está todo bien*
+😊 *¡Tranqui, causita! Todo bien*
 
-No hay problema en absoluto. A veces pueden haber malentendidos en la conversación.
+No te preocupes, a veces pasa. ¿En qué te ayudo?
 
-💡 ¿En qué puedo ayudarte ahora? Estoy aquí para servirte mejor.
-
-🛒 ¿Buscas algún producto específico?
-📍 ¿Necesitas información sobre nuestra tienda?
-🚚 ¿Te interesa nuestro servicio de delivery?
+🛒 ¿Buscas algún producto?
+📍 ¿Info de la tienda?
+🚚 ¿Te interesa el delivery?
     `.trim();
   }
 
   /**
-   * Genera respuesta de saludo personalizada con detección de sentimiento
+   * Genera respuesta de saludo personalizada con jerga local de Tarapoto
    */
   generateSaludoResponse(intent, context, memory) {
     const hora = new Date().getHours();
     const sentiment = context.sentiment || { sentiment: 'neutral', emotion: 'neutral' };
-    let saludo = '¡Hola!';
     
-    if (hora < 12) saludo = '¡Buenos días!';
-    else if (hora < 18) saludo = '¡Buenas tardes!';
-    else saludo = '¡Buenas noches!';
+    // Saludos variados con jerga local
+    const saludosManana = [
+      '¡Buenos días, causita! ☀️',
+      '¡Buen día! ¿Cómo amaneciste? 🌞',
+      '¡Buenos días pe! 👋'
+    ];
     
-    // Ajustar saludo según el sentimiento detectado
-    let emotionalTone = '';
-    if (sentiment.sentiment === 'positive') {
-      emotionalTone = '¡Me alegra verte de buen humor! 😊';
-    } else if (sentiment.sentiment === 'negative') {
-      emotionalTone = 'Espero poder mejorar tu día. 😊';
-    }
+    const saludosTarde = [
+      '¡Buenas tardes! 🌤️',
+      '¡Buenas, causita! ¿Qué tal la tarde? 😊',
+      '¡Hola! Buenas tardes pe 👋'
+    ];
     
+    const saludosNoche = [
+      '¡Buenas noches! 🌙',
+      '¡Buenas noches, causita! 🌟',
+      '¡Hola! Buenas noches pe 👋'
+    ];
+    
+    let saludos = saludosTarde;
+    if (hora < 12) saludos = saludosManana;
+    else if (hora >= 18) saludos = saludosNoche;
+    
+    const saludo = saludos[Math.floor(Math.random() * saludos.length)];
+    
+    // Respuestas de bienvenida variadas
+    const bienvenidas = [
+      'Bienvenido a *La Inmaculada*, tu supermercado de confianza en Tarapoto.',
+      'Soy tu asistente de *La Inmaculada*. ¡Estamos pa\' servirte!',
+      '¡Qué gusto saludarte! Soy de *La Inmaculada*, ¿en qué te ayudo?'
+    ];
+    
+    const preguntas = [
+      '¿Qué producto buscas hoy?',
+      '¿En qué te puedo ayudar?',
+      '¿Qué se te ofrece?',
+      'Cuéntame, ¿qué necesitas?'
+    ];
+    
+    const bienvenida = bienvenidas[Math.floor(Math.random() * bienvenidas.length)];
+    const pregunta = preguntas[Math.floor(Math.random() * preguntas.length)];
+    
+    // Si es cliente recurrente
     if (memory.visitCount && memory.visitCount > 1) {
-      return `${saludo} 👋 ¡Bienvenido nuevamente a Supermercado La Inmaculada! ${emotionalTone} ¿En qué puedo ayudarte hoy?`;
+      const recurrentes = [
+        `${saludo} ¡Qué bueno verte de nuevo! 😊 ${pregunta}`,
+        `${saludo} ¡Hola otra vez, causita! ${pregunta}`,
+        `${saludo} ¡De vuelta por acá! ¿${pregunta}`
+      ];
+      return recurrentes[Math.floor(Math.random() * recurrentes.length)];
     }
     
-    return `${saludo} 👋 ¡Bienvenido a Supermercado La Inmaculada! Soy tu asistente virtual. ${emotionalTone} ¿Qué estás buscando hoy?`;
+    return `${saludo}\n\n${bienvenida}\n\n${pregunta}`;
   }
 
   /**
@@ -1434,38 +1642,97 @@ ${product.description ? `📝 ${product.description}` : ''}
 
   /**
    * Busca productos relacionados usando búsqueda semántica MEJORADA
+   * CORREGIDO: Ahora prioriza coincidencias exactas y evita mezclar categorías
    */
   async searchRelatedProducts(searchTerm) {
     // Asegurar que el catálogo esté cargado (lazy-load)
     await this.ensureCatalogLoaded();
     if (!this.productCatalog) return [];
     
-    const lowerSearchTerm = searchTerm.toLowerCase();
+    const lowerSearchTerm = searchTerm.toLowerCase().trim();
     const relatedProducts = [];
     
-    // Búsqueda mejorada con múltiples estrategias
+    // PASO 1: Buscar coincidencias EXACTAS primero (prioridad alta)
     for (const product of this.productCatalog) {
-      const matchScore = this.calculateProductMatchScoreImproved(product, lowerSearchTerm);
+      const productName = product.name.toLowerCase();
       
-      if (matchScore > 0.2) { // BAJADO el umbral de 0.3 a 0.2 para más resultados
-        relatedProducts.push({ ...product, matchScore });
+      // Coincidencia exacta en nombre
+      if (productName.includes(lowerSearchTerm) || lowerSearchTerm.includes(productName.split(' ')[0])) {
+        relatedProducts.push({ ...product, matchScore: 1.0, matchType: 'exact' });
       }
     }
     
-    // Si no hay resultados, intentar búsqueda más amplia
-    if (relatedProducts.length === 0) {
-      const broadSearchResults = await this.performBroadSearch(lowerSearchTerm);
-      relatedProducts.push(...broadSearchResults);
+    // Si ya tenemos resultados exactos, retornarlos sin mezclar
+    if (relatedProducts.length > 0) {
+      return relatedProducts
+        .sort((a, b) => b.matchScore - a.matchScore)
+        .slice(0, 5);
     }
     
-    // Ordenar por puntuación de coincidencia y popularidad
-    relatedProducts.sort((a, b) => {
-      const scoreDiff = b.matchScore - a.matchScore;
-      if (scoreDiff !== 0) return scoreDiff;
-      return b.popularity - a.popularity;
-    });
+    // PASO 2: Buscar por sinónimos ESPECÍFICOS (solo si no hay exactos)
+    for (const product of this.productCatalog) {
+      // Solo buscar en sinónimos que contengan el término exacto
+      const hasSynonymMatch = product.synonyms.some(syn => 
+        syn.toLowerCase().includes(lowerSearchTerm) || 
+        lowerSearchTerm.includes(syn.toLowerCase())
+      );
+      
+      if (hasSynonymMatch) {
+        relatedProducts.push({ ...product, matchScore: 0.7, matchType: 'synonym' });
+      }
+    }
     
-    return relatedProducts.slice(0, 8); // AUMENTADO de 5 a 8 resultados
+    if (relatedProducts.length > 0) {
+      return relatedProducts
+        .sort((a, b) => b.matchScore - a.matchScore)
+        .slice(0, 5);
+    }
+    
+    // PASO 3: Solo si no hay nada, buscar en categorías
+    const categoryProducts = await this.searchByCategory(lowerSearchTerm);
+    if (categoryProducts.length > 0) {
+      return categoryProducts.slice(0, 5);
+    }
+    
+    return [];
+  }
+  
+  /**
+   * Busca productos por categoría
+   */
+  async searchByCategory(searchTerm) {
+    await this.ensureCatalogLoaded();
+    const results = [];
+    
+    // Mapeo de términos a categorías
+    const categoryMapping = {
+      'lácteo': 'Lácteos',
+      'lacteo': 'Lácteos',
+      'leche': 'Lácteos',
+      'carne': 'Carnes',
+      'pollo': 'Carnes',
+      'pescado': 'Carnes',
+      'fruta': 'Frutas',
+      'verdura': 'Verduras',
+      'arroz': 'Abarrotes',
+      'azúcar': 'Abarrotes',
+      'aceite': 'Abarrotes'
+    };
+    
+    for (const [term, category] of Object.entries(categoryMapping)) {
+      if (searchTerm.includes(term)) {
+        const categoryProducts = (this.productCatalog || []).filter(p => 
+          p.category.name.toLowerCase().includes(category.toLowerCase())
+        );
+        
+        for (const product of categoryProducts.slice(0, 3)) {
+          results.push({ ...product, matchScore: 0.4, matchType: 'category' });
+        }
+        break;
+      }
+    }
+    
+    return results;
   }
 
   /**
@@ -2405,15 +2672,39 @@ ${statusEmoji} ${statusText}
   }
 
   generateUnknownResponse(intent, context, memory) {
-    return `🤔 No estoy seguro de entender tu pregunta.
+    // Respuestas variadas para no ser repetitivo
+    const responses = [
+      `🤔 *¡Uy, causita!* No te entendí bien.
 
-💡 ¿Podrías ayudarme con una de estas opciones?
-• Productos que tenemos disponibles
-• Nuestros horarios de atención
-• Servicio de delivery
-• Nuestra ubicación
+💡 Puedes preguntarme por:
+• 🛒 Productos (ej: "¿tienen leche?")
+• 🕐 Horarios (ej: "¿a qué hora abren?")
+• 🚚 Delivery (ej: "¿hacen delivery?")
+• 📍 Ubicación (ej: "¿dónde están?")
 
-O simplemente dime qué producto buscas y te ayudo a encontrarlo. 😊`;
+O dime directamente qué producto buscas 😊`,
+
+      `😅 *¡Disculpa!* No capté bien tu mensaje.
+
+¿Qué te gustaría saber?
+• Escribe el nombre de un producto
+• Pregunta por nuestros horarios
+• Consulta sobre delivery
+• Pide nuestra dirección
+
+¡Estoy pa' ayudarte, causita! 💪`,
+
+      `🤷 *Mmm...* no estoy seguro de entender.
+
+Intenta de otra forma:
+• "¿Tienen [producto]?"
+• "¿Cuánto cuesta [producto]?"
+• "Quiero pedir [producto]"
+
+¡Dale, cuéntame qué necesitas! 🛒`
+    ];
+    
+    return responses[Math.floor(Math.random() * responses.length)];
   }
 
   /**
