@@ -523,15 +523,19 @@ class AdvancedAIService {
     
     // Ajustar umbrales para multi-intento - BAJADO para mejor detección
     if (intents.length > 1 && intents[0].confidence > 0.6 && intents[1].confidence > 0.5) { // BAJADO de 0.7/0.6 a 0.6/0.5
-      return this.handleMultiIntent(intents.slice(0, 2), message, customerPhone);
+      const result = this.handleMultiIntent(intents.slice(0, 2), message, customerPhone);
+      result.rawMessage = message; // Guardar mensaje original
+      return result;
     }
     
-    return intents[0] || {
+    const result = intents[0] || {
       intention: 'desconocido',
       confidence: 0.25, // AUMENTADO de 0.15 a 0.25
       entities: this.extractAdvancedEntities(message),
       context: ['general']
     };
+    result.rawMessage = message; // Guardar mensaje original
+    return result;
   }
 
   /**
@@ -776,6 +780,11 @@ class AdvancedAIService {
   analyzeProductContextImproved(memory, message) {
     const lowerMessage = message.toLowerCase();
     
+    // Si parece una nueva búsqueda de producto (no selección de lista)
+    const newSearchIndicators = ['quiero', 'dame', 'necesito', 'busco', 'tienes', 'tienen', 'hay'];
+    const isNewSearch = newSearchIndicators.some(word => lowerMessage.includes(word));
+    if (isNewSearch) return null; // Dejar que se procese como nueva búsqueda
+    
     if (memory.lastProducts && memory.lastProducts.length > 0) {
       // Filtrar productos válidos y obtener nombres
       const validProducts = memory.lastProducts.filter(p => p && typeof p === 'object' && p.name);
@@ -783,40 +792,57 @@ class AdvancedAIService {
       
       const productNames = validProducts.map(p => p.name.toLowerCase());
       
-      // Buscar mención de productos anteriores
-      for (const productName of productNames) {
-        const productWords = productName.split(' ');
+      // Buscar mención EXACTA de productos anteriores en la lista
+      for (let i = 0; i < validProducts.length; i++) {
+        const productName = productNames[i];
+        const productWords = productName.split(' ').filter(w => w.length > 2);
         
-        // Coincidencia exacta o parcial significativa
+        // Coincidencia exacta o parcial significativa con producto de la lista
         if (lowerMessage.includes(productName)) {
           return {
             intention: 'seleccion_producto',
-            confidence: 0.95, // AUMENTADO de 0.92 a 0.95
-            entities: { selectedProduct: productName, flow: 'product_mention' },
+            confidence: 0.95,
+            entities: { selectedProduct: validProducts[i], selectedIndex: i, flow: 'product_mention' },
             context: ['seleccion_desde_lista', 'mencion_directa']
           };
         }
         
-        // Coincidencia de palabra clave
+        // Coincidencia de palabra clave del producto específico
         for (const word of productWords) {
-          if (word.length > 3 && lowerMessage.includes(word)) {
+          // Solo si la palabra está en el producto Y el mensaje es corto (selección)
+          if (word.length > 3 && lowerMessage.includes(word) && lowerMessage.length < 30) {
             return {
               intention: 'seleccion_producto',
-              confidence: 0.85, // AUMENTADO de 0.75 a 0.85
-              entities: { selectedProduct: productName, flow: 'product_keyword' },
+              confidence: 0.85,
+              entities: { selectedProduct: validProducts[i], selectedIndex: i, flow: 'product_keyword' },
               context: ['seleccion_desde_lista', 'mencion_parcial']
             };
           }
         }
       }
       
-      // Si menciona "este", "ese", "el primero", etc.
-      const demonstratives = ['este', 'ese', 'aquel', 'primero', 'segundo', 'tercero', 'el primero', 'el segundo'];
-      if (demonstratives.some(demo => lowerMessage.includes(demo))) {
+      // Si menciona número o posición
+      const numberMatch = lowerMessage.match(/^(el\s+)?(\d+|primero|segundo|tercero|uno|dos|tres)$/i);
+      if (numberMatch) {
+        const numberMap = { 'primero': 0, 'uno': 0, 'segundo': 1, 'dos': 1, 'tercero': 2, 'tres': 2 };
+        let index = numberMap[numberMatch[2].toLowerCase()] ?? (parseInt(numberMatch[2]) - 1);
+        if (index >= 0 && index < validProducts.length) {
+          return {
+            intention: 'seleccion_producto',
+            confidence: 0.92,
+            entities: { selectedProduct: validProducts[index], selectedIndex: index, flow: 'number_selection' },
+            context: ['seleccion_desde_lista', 'numero']
+          };
+        }
+      }
+      
+      // Si menciona "este", "ese" - solo si el mensaje es muy corto
+      const demonstratives = ['este', 'ese', 'aquel', 'el primero', 'el segundo'];
+      if (lowerMessage.length < 20 && demonstratives.some(demo => lowerMessage.includes(demo))) {
         return {
           intention: 'seleccion_producto',
-          confidence: 0.90, // AUMENTADO de 0.8 a 0.90
-          entities: { selectedProduct: memory.lastProducts[0].name, flow: 'demonstrative_selection' },
+          confidence: 0.88,
+          entities: { selectedProduct: validProducts[0], selectedIndex: 0, flow: 'demonstrative_selection' },
           context: ['seleccion_desde_lista', 'demostrativo']
         };
       }
@@ -1710,7 +1736,35 @@ ${product.description ? `📝 ${product.description}` : ''}
     // Buscar productos relacionados por el patrón del mensaje
     const searchTerm = intent.matchedPattern ? intent.matchedPattern[2] : (intent.geminiAnalysis?.product_mentioned || null);
     if (searchTerm) {
-      const relatedProducts = await this.searchRelatedProducts(searchTerm);
+      let relatedProducts = await this.searchRelatedProducts(searchTerm);
+      
+      // 🚀 Si no encuentra nada, usar Gemini para interpretar qué busca
+      if (relatedProducts.length === 0 && this.geminiEnabled) {
+        console.log('🧠 Usando Gemini para interpretar búsqueda...');
+        const interpretation = await this.interpretProductSearchWithGemini(searchTerm);
+        
+        if (interpretation && interpretation.suggested_products) {
+          // Buscar los productos sugeridos por Gemini
+          for (const suggestedName of interpretation.suggested_products) {
+            const found = this.productCatalog.find(p => 
+              p.name.toLowerCase().includes(suggestedName.toLowerCase().split(' ')[0])
+            );
+            if (found && !relatedProducts.find(r => r.id === found.id)) {
+              relatedProducts.push({ ...found, matchScore: 0.7, matchType: 'gemini' });
+            }
+          }
+          
+          // Si Gemini sugirió categoría, buscar por categoría
+          if (relatedProducts.length === 0 && interpretation.category) {
+            const categoryProducts = this.productCatalog.filter(p =>
+              p.category.name.toLowerCase().includes(interpretation.category.toLowerCase())
+            );
+            relatedProducts = categoryProducts.slice(0, 5).map(p => ({
+              ...p, matchScore: 0.5, matchType: 'category_gemini'
+            }));
+          }
+        }
+      }
       
       if (relatedProducts.length > 0) {
         memory.lastProducts = relatedProducts;
@@ -1727,7 +1781,35 @@ ${product.description ? `📝 ${product.description}` : ''}
       }
     }
     
-    return `${empathyMessage}🔍 ¡Asu, ñaño! No encontré ese producto. ¿Puedes decirme de otra forma qué buscas?`;
+    // 🚀 Último intento: usar Gemini para entender el mensaje completo
+    if (this.geminiEnabled && intent.rawMessage) {
+      const interpretation = await this.interpretProductSearchWithGemini(intent.rawMessage);
+      if (interpretation && interpretation.suggested_products && interpretation.suggested_products.length > 0) {
+        const relatedProducts = [];
+        for (const suggestedName of interpretation.suggested_products) {
+          const words = suggestedName.toLowerCase().split(' ');
+          const found = this.productCatalog.find(p => 
+            words.some(w => w.length > 3 && p.name.toLowerCase().includes(w))
+          );
+          if (found && !relatedProducts.find(r => r.id === found.id)) {
+            relatedProducts.push(found);
+          }
+        }
+        
+        if (relatedProducts.length > 0) {
+          memory.lastProducts = relatedProducts;
+          let response = `${empathyMessage}🤔 *Creo que buscas algo así, ñaño:*\n\n`;
+          relatedProducts.forEach((product, index) => {
+            const stockEmoji = product.stock > 0 ? '🟢' : '🔴';
+            response += `${index + 1}. *${product.name}* - S/ ${product.price.toFixed(2)} ${stockEmoji}\n`;
+          });
+          response += '\n💡 ¿Es alguno de estos, pata?';
+          return response;
+        }
+      }
+    }
+    
+    return `${empathyMessage}🔍 ¡Asu, ñaño! No encontré ese producto. ¿Puedes decirme el nombre exacto o la categoría (bebidas, dulces, carnes)?`;
   }
 
   /**
@@ -1788,41 +1870,125 @@ ${product.description ? `📝 ${product.description}` : ''}
   }
   
   /**
-   * Busca productos por categoría
+   * Busca productos por categoría con mapeo EXPANDIDO para la selva
    */
   async searchByCategory(searchTerm) {
     await this.ensureCatalogLoaded();
     const results = [];
     
-    // Mapeo de términos a categorías
+    // Mapeo COMPLETO de términos a categorías (incluye jerga selvática)
     const categoryMapping = {
-      'lácteo': 'Lácteos',
-      'lacteo': 'Lácteos',
-      'leche': 'Lácteos',
-      'carne': 'Carnes',
-      'pollo': 'Carnes',
-      'pescado': 'Carnes',
-      'fruta': 'Frutas',
-      'verdura': 'Verduras',
-      'arroz': 'Abarrotes',
-      'azúcar': 'Abarrotes',
-      'aceite': 'Abarrotes'
+      // Bebidas
+      'gaseosa': 'Bebidas', 'refresco': 'Bebidas', 'tomar': 'Bebidas', 'sed': 'Bebidas',
+      'calor': 'Bebidas', 'refrescante': 'Bebidas', 'trago': 'Bebidas', 'chela': 'Bebidas',
+      'cerveza': 'Bebidas', 'agua': 'Bebidas', 'jugo': 'Bebidas', 'bebida': 'Bebidas',
+      'coca': 'Bebidas', 'inka': 'Bebidas', 'cola': 'Bebidas', 'fresquito': 'Bebidas',
+      
+      // Lácteos
+      'lácteo': 'Lácteos', 'lacteo': 'Lácteos', 'leche': 'Lácteos', 'yogurt': 'Lácteos',
+      'queso': 'Lácteos', 'mantequilla': 'Lácteos', 'huevo': 'Lácteos',
+      
+      // Carnes
+      'carne': 'Carnes', 'pollo': 'Carnes', 'pescado': 'Carnes', 'res': 'Carnes',
+      'chancho': 'Carnes', 'cerdo': 'Carnes', 'jamón': 'Carnes', 'salchicha': 'Carnes',
+      'juane': 'Carnes', 'gallina': 'Carnes', // Para juane necesitan pollo/gallina
+      
+      // Frutas y Verduras
+      'fruta': 'Frutas', 'verdura': 'Verduras', 'plátano': 'Frutas', 'platano': 'Frutas',
+      'naranja': 'Frutas', 'papaya': 'Frutas', 'cebolla': 'Verduras', 'tomate': 'Verduras',
+      
+      // Abarrotes
+      'arroz': 'Abarrotes', 'azúcar': 'Abarrotes', 'aceite': 'Abarrotes', 'sal': 'Abarrotes',
+      'fideos': 'Abarrotes', 'atún': 'Abarrotes',
+      
+      // Golosinas/Dulces
+      'dulce': 'Golosinas', 'chocolate': 'Golosinas', 'galleta': 'Golosinas', 'caramelo': 'Golosinas',
+      'gomita': 'Golosinas', 'snack': 'Golosinas', 'antojo': 'Golosinas', 'golosina': 'Golosinas',
+      'postre': 'Golosinas', 'paneton': 'Golosinas', 'panetón': 'Golosinas',
+      
+      // Limpieza
+      'limpieza': 'Limpieza', 'detergente': 'Limpieza', 'jabón': 'Limpieza', 'jabon': 'Limpieza',
+      'cloro': 'Limpieza', 'lejía': 'Limpieza', 'papel': 'Limpieza', 'esponja': 'Limpieza',
+      
+      // Higiene personal
+      'shampoo': 'Higiene', 'desodorante': 'Higiene', 'pasta': 'Higiene', 'dental': 'Higiene',
+      'cepillo': 'Higiene', 'pañal': 'Higiene',
+      
+      // Contextos situacionales (selva)
+      'fiesta': 'Bebidas', 'party': 'Bebidas', 'invitar': 'Bebidas', 'patas': 'Bebidas',
+      'causitas': 'Bebidas', 'celebrar': 'Bebidas', 'cumple': 'Bebidas',
+      'desayuno': 'Lácteos', 'almuerzo': 'Carnes', 'cena': 'Carnes',
+      'rapidito': 'Golosinas', 'rápido': 'Golosinas', 'hambre': 'Golosinas'
     };
     
+    // Buscar en el mapeo
     for (const [term, category] of Object.entries(categoryMapping)) {
       if (searchTerm.includes(term)) {
         const categoryProducts = (this.productCatalog || []).filter(p => 
           p.category.name.toLowerCase().includes(category.toLowerCase())
         );
         
-        for (const product of categoryProducts.slice(0, 3)) {
-          results.push({ ...product, matchScore: 0.4, matchType: 'category' });
+        for (const product of categoryProducts.slice(0, 5)) {
+          results.push({ ...product, matchScore: 0.6, matchType: 'category' });
         }
-        break;
+        if (results.length > 0) break;
       }
     }
     
     return results;
+  }
+
+  /**
+   * Usa Gemini para interpretar qué producto busca el cliente
+   */
+  async interpretProductSearchWithGemini(message, conversationHistory = []) {
+    if (!this.geminiEnabled) return null;
+    
+    try {
+      // Obtener lista de productos disponibles
+      await this.ensureCatalogLoaded();
+      const productList = this.productCatalog.map(p => `${p.name} (${p.category.name})`).join(', ');
+      
+      const prompt = `
+Eres un asistente de un supermercado en Tarapoto, Perú (selva).
+El cliente dice: "${message}"
+
+PRODUCTOS DISPONIBLES:
+${productList}
+
+INSTRUCCIONES:
+1. Interpreta qué PRODUCTO o CATEGORÍA busca el cliente
+2. Si menciona contexto (ej: "hace calor", "fiesta", "dulce"), deduce qué necesita
+3. Si no hay producto exacto, sugiere la categoría más cercana
+
+Responde SOLO con JSON:
+{
+  "product_search": "término de búsqueda exacto para encontrar el producto",
+  "category": "Bebidas|Lácteos|Carnes|Golosinas|Limpieza|Higiene|Frutas|Verduras|Abarrotes",
+  "interpretation": "qué crees que busca el cliente",
+  "confidence": 0.85,
+  "suggested_products": ["nombre exacto producto 1", "nombre exacto producto 2"]
+}
+
+EJEMPLOS:
+- "hace calor, q tienes para tomar" → {"product_search": "bebidas", "category": "Bebidas", "suggested_products": ["Coca Cola 3L", "Inka Cola 3L", "Agua San Mateo 2.5L"]}
+- "algo dulce" → {"product_search": "chocolate", "category": "Golosinas", "suggested_products": ["Chocolate Sublime 50g", "Galletas Glacitas 150g"]}
+- "para mi juane" → {"product_search": "pollo", "category": "Carnes", "suggested_products": ["Pollo Entero Fresco 2.5kg"]}`;
+
+      const result = await this.geminiModel.generateContent(prompt);
+      const text = result.response.text();
+      
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        console.log('🧠 Gemini interpretó búsqueda:', parsed.interpretation);
+        return parsed;
+      }
+      return null;
+    } catch (error) {
+      console.error('⚠️ Error en interpretación Gemini:', error.message);
+      return null;
+    }
   }
 
   /**
@@ -2673,30 +2839,47 @@ ${product2.popularity > 50 ? '⭐ Producto popular' : ''}
    */
   generateSeleccionProductoResponse(intent, context, memory) {
     const selectedProduct = intent.entities.selectedProduct;
+    const selectedIndex = intent.entities.selectedIndex;
     const lastProducts = memory.lastProducts || [];
     
-    // Buscar el producto seleccionado en la lista
-    const product = lastProducts.find(p => 
-      p.name.toLowerCase().includes(selectedProduct) || 
-      selectedProduct.includes(p.name.toLowerCase())
-    );
+    let product = null;
+    
+    // Si selectedProduct ya es un objeto de producto
+    if (selectedProduct && typeof selectedProduct === 'object' && selectedProduct.name) {
+      product = selectedProduct;
+    }
+    // Si es un string, buscar en la lista
+    else if (typeof selectedProduct === 'string') {
+      const searchTerm = selectedProduct.toLowerCase();
+      product = lastProducts.find(p => 
+        p.name.toLowerCase().includes(searchTerm) || 
+        searchTerm.includes(p.name.toLowerCase().split(' ')[0])
+      );
+    }
+    // Si hay índice, usar directamente
+    else if (typeof selectedIndex === 'number' && lastProducts[selectedIndex]) {
+      product = lastProducts[selectedIndex];
+    }
     
     if (product) {
+      // Actualizar memoria con el producto seleccionado
+      memory.lastProducts = [product];
+      
       return `
-✅ *Producto seleccionado:*
+✅ *¡Bacán elección, ñaño!*
 
 📦 *${product.name}*
 💰 Precio: S/ ${product.price.toFixed(2)}
 📦 Stock: ${product.stock} unidades
 🏷️ Categoría: ${product.category.name}
-${product.popularity > 50 ? '⭐ Producto popular' : ''}
+${product.popularity > 50 ? '⭐ ¡Este vuela, pata!' : ''}
 ${product.description ? `📝 ${product.description}` : ''}
 
-🛒 ¿Qué cantidad necesitas? O ¿te gustaría agregarlo a un pedido?
+🛒 ¿Cuántos quieres, ñaño? Dime la cantidad.
       `.trim();
     }
     
-    return '✅ ¡Producto seleccionado! ¿Qué cantidad te gustaría ordenar?';
+    return '✅ ¡Ya pe, producto seleccionado! ¿Cuántos te llevo, ñaño?';
   }
 
   /**
