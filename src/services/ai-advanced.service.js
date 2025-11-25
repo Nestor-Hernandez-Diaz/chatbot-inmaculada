@@ -1,11 +1,66 @@
 // src/services/ai-advanced.service.js
 const prisma = require('../config/database');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 /**
- * Motor de IA Avanzado con Contexto Empresarial y Memoria Conversacional
+ * Motor de IA Avanzado con Contexto Empresarial, Memoria Conversacional e Integración con Gemini
  */
 class AdvancedAIService {
   constructor() {
+    // Inicializar Gemini AI para análisis contextual avanzado
+    this.geminiEnabled = !!process.env.GOOGLE_API_KEY;
+    if (this.geminiEnabled) {
+      this.genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+      this.geminiModel = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      console.log('🤖 Gemini AI activado para análisis contextual');
+    } else {
+      console.log('⚠️ Gemini AI no configurado - usando solo patrones locales');
+    }
+
+    // Expresiones auténticas de la selva peruana (San Martín/Tarapoto)
+    this.expresionesSelvaticas = {
+      saludos: [
+        '¡Hola, ñaño! 👋',
+        '¡Qué tal, pata! 🙌',
+        '¡Buenas, causa! 😊',
+        '¡Oe, qué gusto verte por acá! 🌴',
+        '¡Hola pe, bienvenido! 🛒'
+      ],
+      afirmaciones: [
+        '¡Ya pe, de una!',
+        '¡Claro que sí, pata!',
+        '¡De ley, ñaño!',
+        '¡Asu, qué buena elección!',
+        '¡Bacán pe!'
+      ],
+      despedidas: [
+        '¡Hasta luego, ñaño! Cuídate 🌴',
+        '¡Chau pata, vuelve pronto! 👋',
+        '¡Nos vemos, causa! 🙌',
+        '¡Ya pe, estamos pa servirte! 😊'
+      ],
+      agradecimientos: [
+        '¡Gracias, ñaño!',
+        '¡Gracias pe, causa!',
+        '¡De nada pata, pa eso estamos!'
+      ],
+      preguntas: [
+        '¿Qué más te puedo ayudar, ñaño?',
+        '¿Algo más, pata?',
+        '¿En qué más te servimos, causa?'
+      ],
+      confirmaciones: [
+        '¡Ya está pe!',
+        '¡Listo, ñaño!',
+        '¡De una, pata!'
+      ],
+      disculpas: [
+        '¡Asu, disculpa!',
+        '¡Perdona pe, ñaño!',
+        '¡Uy, mi error pata!'
+      ]
+    };
+
     // Contexto empresarial completo de La Inmaculada
     this.businessContext = {
       name: 'Supermercado La Inmaculada',
@@ -517,14 +572,17 @@ class AdvancedAIService {
       });
     }
     
-    // Buscar confirmaciones o negaciones implícitas - MEJORADAS
+    // Buscar confirmaciones o negaciones implícitas - MEJORADAS con jerga selvática
     if (message.match(/^s[ií]$/i) || message.includes('correcto') || message.includes('exacto') || message.includes('cierto') || 
         message.includes('me interesa') || message.includes('me gusta') || message.includes('prefiero') ||
         message.includes('sí, me interesa') || message.includes('sí me interesa') || message.includes('claro') ||
-        message.includes('efectivamente') || message.includes('vale') || message.includes('ok')) {
+        message.includes('efectivamente') || message.includes('vale') || message.includes('ok') ||
+        message.includes('de una') || message.includes('ya pe') || message.includes('dale') ||
+        message.includes('confirmo') || message.match(/^bac[aá]n$/i) || message.includes('listo') ||
+        message.match(/^eso$/i) || message.includes('así es') || message.includes('aja')) {
       implicitIntents.push({
         intention: 'confirmacion_implicita',
-        confidence: 0.90, // AUMENTADO de 0.85 a 0.90
+        confidence: 0.92, // AUMENTADO
         entities: {},
         context: ['afirmacion', 'continuacion'],
         implicit: true
@@ -719,7 +777,11 @@ class AdvancedAIService {
     const lowerMessage = message.toLowerCase();
     
     if (memory.lastProducts && memory.lastProducts.length > 0) {
-      const productNames = memory.lastProducts.map(p => p.name.toLowerCase());
+      // Filtrar productos válidos y obtener nombres
+      const validProducts = memory.lastProducts.filter(p => p && typeof p === 'object' && p.name);
+      if (validProducts.length === 0) return null;
+      
+      const productNames = validProducts.map(p => p.name.toLowerCase());
       
       // Buscar mención de productos anteriores
       for (const productName of productNames) {
@@ -1426,6 +1488,11 @@ ${selectedProduct.description ? `📝 ${selectedProduct.description}` : ''}
     if (lastProducts.length > 0) {
       const product = lastProducts[0]; // Producto más reciente
       
+      // Verificar que product sea un objeto válido
+      if (!product || typeof product !== 'object' || !product.price) {
+        return `📦 *¡De una, ${quantity} ${unit}${quantity > 1 ? 'es' : ''}!* 👍\n\n¿De qué producto, ñaño? Dime el nombre.`;
+      }
+      
       // Guardar en memoria del pedido actual
       memory.currentOrder = memory.currentOrder || [];
       
@@ -1441,75 +1508,75 @@ ${selectedProduct.description ? `📝 ${selectedProduct.description}` : ''}
         });
         
         return `
-🛒 *¡Listo, causita!*
+🛒 *¡Ya pe, ñaño! Ahí va tu pedido:*
 
 📦 *${product.name}*
 📋 Cantidad: ${quantity} ${unit}${quantity > 1 && unit === 'unidad' ? 'es' : ''}
 💰 Precio: S/ ${product.price.toFixed(2)} c/u
 💵 Total: S/ ${total.toFixed(2)}
 
-✅ *¿Confirmamos?* Escribe "sí" o "confirmar"
-🛒 ¿Quieres agregar algo más? Dime qué producto
+✅ *¿Confirmamos, pata?* Escribe "sí" o "de una"
+🛒 ¿Algo más? Dime qué producto
 ❌ Para cancelar escribe "cancelar"
         `.trim();
       } else {
-        return `😅 *¡Uy, causita!* Solo nos quedan *${product.stock} unidades* de ${product.name}.\n\n¿Te parece esa cantidad? O dime otro producto que busques.`;
+        return `😅 *¡Asu, ñaño!* Solo nos quedan *${product.stock} unidades* de ${product.name}.\n\n¿Te parece esa cantidad pe? O dime otro producto.`;
       }
     }
     
-    return `📦 *Entendido, ${quantity} ${unit}${quantity > 1 ? 'es' : ''}* 👍\n\n¿De qué producto, causita?`;
+    return `📦 *¡De una, ${quantity} ${unit}${quantity > 1 ? 'es' : ''}!* 👍\n\n¿De qué producto, ñaño?`;
   }
 
   /**
-   * Genera respuesta de confirmación implícita - HUMANIZADA
+   * Genera respuesta de confirmación implícita con jerga selvática
    */
   generateConfirmacionImplicitaResponse(intent, context, memory) {
     const responses = [
-      '✅ *¡Ya pe, causita!* ¿Qué más necesitas?',
-      '👍 *¡Listo!* ¿En qué más te ayudo?',
-      '✅ *¡Perfecto!* ¿Algo más que busques?',
-      '👌 *¡Dale!* Cuéntame qué más necesitas.'
+      '✅ *¡Ya pe, ñaño!* ¿Qué más necesitas?',
+      '👍 *¡Bacán!* ¿En qué más te ayudo, pata?',
+      '✅ *¡De una!* ¿Algo más que busques?',
+      '👌 *¡Listo pe!* Cuéntame qué más necesitas, ñaño.'
     ];
     
     return responses[Math.floor(Math.random() * responses.length)];
   }
 
   /**
-   * Genera respuesta de negación implícita - HUMANIZADA
+   * Genera respuesta de negación implícita con jerga selvática
    */
   generateNegacionImplicitaResponse(intent, context, memory) {
     const responses = [
-      '👍 *No hay problema pe.* ¿Qué prefieres entonces?',
-      '✅ *Ya, entendido.* ¿Qué otra cosita buscas?',
-      '👌 *Dale, sin problema.* ¿Qué necesitas?',
-      '🔄 *Tranqui, causita.* Dime qué más te ofrezco.'
+      '👍 *No hay drama pe, ñaño.* ¿Qué prefieres entonces?',
+      '✅ *Ya, tranqui pata.* ¿Qué otra cosita buscas?',
+      '👌 *Dale, sin problema.* ¿Qué necesitas, ñaño?',
+      '🔄 *Tranqui pe, pata.* Dime qué más te ofrezco.'
     ];
     
     return responses[Math.floor(Math.random() * responses.length)];
   }
 
   /**
-   * Genera respuesta de agradecimiento - HUMANIZADA
+   * Genera respuesta de agradecimiento con jerga selvática
    */
   generateAgradecimientoResponse(intent, context, memory) {
     const responses = [
-      '😊 *¡De nada, causita!* Estamos pa\' servirte. ¿Algo más?',
-      '✨ *¡Con gusto!* ¿Qué más se te ofrece?',
-      '🙏 *¡Gracias a ti!* ¿En qué más te ayudo?',
-      '😄 *¡Pa\' eso estamos!* ¿Necesitas algo más?'
+      '😊 *¡De nada pe, ñaño!* Estamos pa\' servirte. ¿Algo más?',
+      '✨ *¡Con gusto, pata!* ¿Qué más se te ofrece?',
+      '🙏 *¡Gracias a ti, ñaño!* ¿En qué más te ayudo?',
+      '😄 *¡Pa\' eso estamos pe!* ¿Necesitas algo más, pata?'
     ];
     
     return responses[Math.floor(Math.random() * responses.length)];
   }
 
   /**
-   * Genera respuesta de disculpa - HUMANIZADA
+   * Genera respuesta de disculpa con jerga selvática
    */
   generateDisculpaResponse(intent, context, memory) {
     return `
-😊 *¡Tranqui, causita! Todo bien*
+😊 *¡Tranqui pe, ñaño! Todo bien*
 
-No te preocupes, a veces pasa. ¿En qué te ayudo?
+No te preocupes, a veces pasa pe. ¿En qué te ayudo?
 
 🛒 ¿Buscas algún producto?
 📍 ¿Info de la tienda?
@@ -1524,23 +1591,26 @@ No te preocupes, a veces pasa. ¿En qué te ayudo?
     const hora = new Date().getHours();
     const sentiment = context.sentiment || { sentiment: 'neutral', emotion: 'neutral' };
     
-    // Saludos variados con jerga local
+    // Saludos variados con jerga SELVÁTICA auténtica
     const saludosManana = [
-      '¡Buenos días, causita! ☀️',
-      '¡Buen día! ¿Cómo amaneciste? 🌞',
-      '¡Buenos días pe! 👋'
+      '¡Buenos días, ñaño! ☀️',
+      '¡Buen día pe, pata! ¿Cómo amaneciste? 🌞',
+      '¡Buenos días, causa! 👋',
+      '¡Oe, buenos días! 🌴'
     ];
     
     const saludosTarde = [
-      '¡Buenas tardes! 🌤️',
-      '¡Buenas, causita! ¿Qué tal la tarde? 😊',
-      '¡Hola! Buenas tardes pe 👋'
+      '¡Buenas tardes, ñaño! 🌤️',
+      '¡Buenas pe, pata! ¿Qué tal tu tarde? 😊',
+      '¡Hola causa! Buenas tardes 👋',
+      '¡Oe, buenas tardes! 🌴'
     ];
     
     const saludosNoche = [
-      '¡Buenas noches! 🌙',
-      '¡Buenas noches, causita! 🌟',
-      '¡Hola! Buenas noches pe 👋'
+      '¡Buenas noches, ñaño! 🌙',
+      '¡Buenas noches pe, pata! 🌟',
+      '¡Hola causa! Buenas noches 👋',
+      '¡Oe, buenas noches! 🌴'
     ];
     
     let saludos = saludosTarde;
@@ -1549,18 +1619,18 @@ No te preocupes, a veces pasa. ¿En qué te ayudo?
     
     const saludo = saludos[Math.floor(Math.random() * saludos.length)];
     
-    // Respuestas de bienvenida variadas
+    // Bienvenidas con identidad selvática
     const bienvenidas = [
-      'Bienvenido a *La Inmaculada*, tu supermercado de confianza en Tarapoto.',
-      'Soy tu asistente de *La Inmaculada*. ¡Estamos pa\' servirte!',
-      '¡Qué gusto saludarte! Soy de *La Inmaculada*, ¿en qué te ayudo?'
+      'Bienvenido a *La Inmaculada* pe, tu super de confianza aquí en Tarapoto 🌴',
+      'Soy tu asistente de *La Inmaculada*. ¡Estamos pa\' servirte, ñaño!',
+      '¡Qué gusto saludarte, pata! Soy de *La Inmaculada* 🛒'
     ];
     
     const preguntas = [
       '¿Qué producto buscas hoy?',
-      '¿En qué te puedo ayudar?',
-      '¿Qué se te ofrece?',
-      'Cuéntame, ¿qué necesitas?'
+      '¿En qué te ayudo, ñaño?',
+      '¿Qué se te ofrece, pata?',
+      'Cuéntame pe, ¿qué necesitas?'
     ];
     
     const bienvenida = bienvenidas[Math.floor(Math.random() * bienvenidas.length)];
@@ -1569,9 +1639,9 @@ No te preocupes, a veces pasa. ¿En qué te ayudo?
     // Si es cliente recurrente
     if (memory.visitCount && memory.visitCount > 1) {
       const recurrentes = [
-        `${saludo} ¡Qué bueno verte de nuevo! 😊 ${pregunta}`,
-        `${saludo} ¡Hola otra vez, causita! ${pregunta}`,
-        `${saludo} ¡De vuelta por acá! ¿${pregunta}`
+        `${saludo} ¡Asu, qué bueno verte de nuevo! 😊 ${pregunta}`,
+        `${saludo} ¡De vuelta pe, ñaño! ${pregunta}`,
+        `${saludo} ¡Otra vez por acá, pata bacán! ${pregunta}`
       ];
       return recurrentes[Math.floor(Math.random() * recurrentes.length)];
     }
@@ -1580,26 +1650,46 @@ No te preocupes, a veces pasa. ¿En qué te ayudo?
   }
 
   /**
-   * Genera respuesta de consulta de producto con búsqueda inteligente y empatía
+   * Genera respuesta de consulta de producto con jerga selvática y empatía
    */
   async generateProductConsultationResponse(intent, context, memory) {
-    const product = intent.entities.product;
+    let product = intent.entities.product;
     const sentiment = context.sentiment || { sentiment: 'neutral', emotion: 'neutral' };
     
-    // Mensaje empático según el sentimiento
+    // Mensaje empático con jerga selvática
     let empathyMessage = '';
     if (sentiment.sentiment === 'positive') {
-      empathyMessage = '😊 ¡Me alegra que estés interesado! ';
+      empathyMessage = '😊 ¡Bacán que te interese, ñaño! ';
     } else if (sentiment.sentiment === 'negative') {
-      empathyMessage = '😔 Entiendo tu preocupación, déjame ayudarte. ';
+      empathyMessage = '😔 Tranqui pata, te ayudo de una. ';
     } else if (sentiment.emotion === 'urgent_neutral') {
-      empathyMessage = '⚡ Entiendo que lo necesitas rápido. ';
+      empathyMessage = '⚡ ¡Ya pe, de una te lo busco! ';
     }
     
-    if (product) {
-      // Producto específico encontrado
+    // Si product es un string (viene de Gemini), buscar en el catálogo
+    if (typeof product === 'string') {
+      const relatedProducts = await this.searchRelatedProducts(product);
+      if (relatedProducts.length > 0) {
+        memory.lastProducts = relatedProducts;
+        
+        let response = `${empathyMessage}📋 *Encontré ${relatedProducts.length} productos de "${product}", ñaño:*\n\n`;
+        
+        relatedProducts.forEach((prod, index) => {
+          const stockEmoji = prod.stock > 0 ? '🟢' : '🔴';
+          response += `${index + 1}. *${prod.name}* - S/ ${prod.price.toFixed(2)} ${stockEmoji}\n`;
+        });
+        
+        response += '\n💡 ¿Cuál te llevo, pata? Dime el número o el nombre.';
+        return response;
+      }
+      // Si no se encontró, continuar con búsqueda normal
+      product = null;
+    }
+    
+    if (product && typeof product === 'object' && product.price !== undefined) {
+      // Producto específico encontrado (objeto completo)
       const stockEmoji = product.stock > 20 ? '🟢' : product.stock > 5 ? '🟡' : product.stock > 0 ? '🟠' : '🔴';
-      const popularidad = product.popularity > 50 ? '⭐ Producto popular' : '';
+      const popularidad = product.popularity > 50 ? '⭐ ¡Este vuela, ñaño!' : '';
       
       // Guardar en memoria para contexto futuro
       memory.lastProducts = [product];
@@ -1613,31 +1703,31 @@ ${stockEmoji} Stock: ${product.stock} unidades
 ${popularidad}
 ${product.description ? `📝 ${product.description}` : ''}
 
-💡 ¿Te gustaría ordenar este producto o ver algo más?
+💡 ¿Lo quieres pedir, ñaño? ¿Cuántas unidades?
       `.trim();
     }
     
-    // Buscar productos relacionados
-    const searchTerm = intent.matchedPattern ? intent.matchedPattern[2] : null;
+    // Buscar productos relacionados por el patrón del mensaje
+    const searchTerm = intent.matchedPattern ? intent.matchedPattern[2] : (intent.geminiAnalysis?.product_mentioned || null);
     if (searchTerm) {
       const relatedProducts = await this.searchRelatedProducts(searchTerm);
       
       if (relatedProducts.length > 0) {
         memory.lastProducts = relatedProducts;
         
-        let response = `${empathyMessage}📋 *Encontré ${relatedProducts.length} productos relacionados con "${searchTerm}":*\n\n`;
+        let response = `${empathyMessage}📋 *Encontré ${relatedProducts.length} productos de "${searchTerm}", ñaño:*\n\n`;
         
         relatedProducts.forEach((product, index) => {
           const stockEmoji = product.stock > 0 ? '🟢' : '🔴';
           response += `${index + 1}. *${product.name}* - S/ ${product.price.toFixed(2)} ${stockEmoji}\n`;
         });
         
-        response += '\n💡 ¿Cuál te interesa? Puedo darte más detalles.';
+        response += '\n💡 ¿Cuál te llevo, pata? Te doy más detalles si quieres.';
         return response;
       }
     }
     
-    return `${empathyMessage}🔍 No encontré productos con esa descripción. ¿Podrías ser más específico o mencionar la categoría que te interesa?`;
+    return `${empathyMessage}🔍 ¡Asu, ñaño! No encontré ese producto. ¿Puedes decirme de otra forma qué buscas?`;
   }
 
   /**
@@ -2311,21 +2401,78 @@ ${product.description ? `📝 ${product.description}` : ''}
   }
   
   /**
-   * Interfaz principal mejorada con análisis de sentimiento y aprendizaje continuo
+   * Interfaz principal mejorada con Gemini AI para análisis contextual profundo
    */
   async analyzeMessage(message, customerPhone) {
     try {
       // Obtener historial reciente
       const recentHistory = await this.getRecentConversationHistory(customerPhone);
       
-      // Analizar intención
-      const intent = await this.analyzeIntent(message, customerPhone, recentHistory);
+      // Analizar intención con patrones locales
+      let intent = await this.analyzeIntent(message, customerPhone, recentHistory);
       
       // Analizar sentimiento del mensaje
       const sentiment = this.analyzeSentiment(message);
       
-      // Generar respuesta contextual con sentimiento
-      const response = await this.generateAdvancedResponse(intent, { sentiment }, customerPhone);
+      let response;
+      let geminiUsed = false;
+      
+      // 🚀 SI LA CONFIANZA ES BAJA O ES DESCONOCIDO, USAR GEMINI
+      if (intent.confidence < 0.6 || intent.intention === 'desconocido') {
+        console.log(`🤖 Confianza baja (${Math.round(intent.confidence * 100)}%), consultando Gemini...`);
+        
+        const geminiAnalysis = await this.analyzeWithGemini(message, recentHistory);
+        
+        if (geminiAnalysis && geminiAnalysis.confidence > 0.7) {
+          geminiUsed = true;
+          console.log(`✨ Gemini entendió: "${geminiAnalysis.customer_need}"`);
+          
+          // Actualizar intent con análisis de Gemini
+          intent = {
+            ...intent,
+            intention: geminiAnalysis.intention,
+            confidence: geminiAnalysis.confidence,
+            entities: {
+              ...intent.entities,
+              product: geminiAnalysis.product_mentioned,
+              quantity: geminiAnalysis.quantity
+            },
+            geminiAnalysis: geminiAnalysis
+          };
+          
+          // Si Gemini detectó un producto, buscar en catálogo
+          if (geminiAnalysis.product_mentioned) {
+            const products = await this.searchRelatedProducts(geminiAnalysis.product_mentioned);
+            if (products.length > 0) {
+              response = await this.generateAdvancedResponse(intent, { sentiment }, customerPhone);
+            } else {
+              // Usar respuesta sugerida por Gemini si no hay productos
+              response = geminiAnalysis.suggested_response;
+              if (geminiAnalysis.follow_up_question) {
+                response += `\n\n${geminiAnalysis.follow_up_question}`;
+              }
+            }
+          } else {
+            // Usar respuesta sugerida por Gemini
+            response = geminiAnalysis.suggested_response;
+            if (geminiAnalysis.follow_up_question) {
+              response += `\n\n${geminiAnalysis.follow_up_question}`;
+            }
+          }
+        } else {
+          // Gemini no pudo ayudar, intentar generar respuesta contextual
+          const geminiResponse = await this.generateGeminiResponse(message, { sentiment }, this.getConversationMemory(customerPhone));
+          if (geminiResponse) {
+            geminiUsed = true;
+            response = geminiResponse;
+          } else {
+            response = await this.generateAdvancedResponse(intent, { sentiment }, customerPhone);
+          }
+        }
+      } else {
+        // Confianza alta, usar respuesta normal
+        response = await this.generateAdvancedResponse(intent, { sentiment }, customerPhone);
+      }
       
       // Registrar aprendizaje de esta interacción
       this.learnFromInteraction(message, intent, sentiment, customerPhone);
@@ -2342,6 +2489,7 @@ ${product.description ? `📝 ${product.description}` : ''}
         response: response,
         products: products,
         sentiment: sentiment,
+        geminiUsed: geminiUsed,
         learningStats: this.getLearningStatistics(),
         context: {
           customerPhone,
@@ -2357,7 +2505,7 @@ ${product.description ? `📝 ${product.description}` : ''}
       return {
         intent: 'error',
         confidence: 0,
-        response: 'Lo siento, estoy teniendo dificultades para procesar tu mensaje. ¿Podrías intentar de nuevo? 🙏',
+        response: '¡Asu, ñaño! Tuve un problemita. ¿Podrías repetirme qué necesitas? 🙏',
         products: [],
         sentiment: { sentiment: 'neutral', confidence: 0, emotion: 'neutral' },
         learningStats: this.getLearningStatistics(),
@@ -2671,37 +2819,145 @@ ${statusEmoji} ${statusText}
 ¡Que tengas un excelente día! 🌟`;
   }
 
+  /**
+   * Usa Gemini AI para entender mejor mensajes ambiguos
+   */
+  async analyzeWithGemini(message, conversationHistory = []) {
+    if (!this.geminiEnabled) {
+      return null;
+    }
+
+    try {
+      const historyContext = conversationHistory.length > 0
+        ? `Historial reciente:\n${conversationHistory.map(m => `${m.sender}: ${m.content}`).join('\n')}`
+        : 'Sin historial previo';
+
+      const prompt = `
+Eres un asistente del Supermercado La Inmaculada en Tarapoto, San Martín, Perú.
+Hablas con jerga de la SELVA PERUANA: "ñaño", "pata", "causa", "pe", "de una", "bacán", "asu".
+
+CONTEXTO DEL NEGOCIO:
+- Supermercado familiar en Tarapoto
+- Productos frescos locales: plátano, yuca, pescado amazónico, camu camu, aguaje
+- Horarios: Lun-Sáb 7am-9pm, Dom 8am-2pm
+- Delivery disponible en Tarapoto, Banda de Shilcayo, Morales
+- Métodos de pago: Efectivo, Yape, Plin, tarjeta
+
+${historyContext}
+
+MENSAJE DEL CLIENTE: "${message}"
+
+Responde en JSON con este formato EXACTO:
+{
+  "intention": "saludo|consulta_producto|consulta_precio|pedido|ver_catalogo|horarios|ubicacion|delivery|despedida|agradecimiento|otro",
+  "confidence": 0.95,
+  "product_mentioned": "nombre del producto o null",
+  "quantity": "cantidad mencionada o null",
+  "customer_need": "qué necesita el cliente en una frase corta",
+  "suggested_response": "respuesta corta y amigable con jerga selvática (máx 3 líneas)",
+  "follow_up_question": "pregunta de seguimiento si es necesaria o null"
+}
+
+IMPORTANTE: 
+- Usa jerga selvática natural: "ñaño", "pata", "pe", "de una", "bacán"
+- Sé amable y cercano como un vendedor de la selva
+- Si el cliente pregunta algo ambiguo, interpreta según el contexto del supermercado`;
+
+      const result = await this.geminiModel.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text();
+      
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        console.log('🤖 Gemini análisis:', parsed.intention, '- Necesidad:', parsed.customer_need);
+        return parsed;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('⚠️ Error en Gemini:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Genera respuesta usando Gemini cuando no entendemos bien
+   */
+  async generateGeminiResponse(message, context, memory) {
+    if (!this.geminiEnabled) {
+      return null;
+    }
+
+    try {
+      const memoryContext = memory ? 
+        `Estado actual: ${memory.currentState}, Producto seleccionado: ${memory.selectedProduct?.name || 'ninguno'}` : 
+        'Sin contexto previo';
+
+      const prompt = `
+Eres el asistente virtual del Supermercado La Inmaculada en Tarapoto, Perú.
+Tu personalidad es amigable, cercana y usas expresiones de la SELVA PERUANA.
+
+EXPRESIONES QUE DEBES USAR:
+- "ñaño" o "pata" para referirte al cliente
+- "pe" al final de frases ("ya pe", "claro pe")
+- "de una" para confirmar
+- "bacán" para algo bueno
+- "asu" para sorpresa
+
+CONTEXTO:
+${memoryContext}
+Sentimiento del cliente: ${context.sentiment?.sentiment || 'neutral'}
+
+MENSAJE DEL CLIENTE: "${message}"
+
+Genera una respuesta corta (máximo 4 líneas) que:
+1. Sea amigable y use jerga selvática
+2. Intente entender qué necesita el cliente
+3. Ofrezca ayuda concreta relacionada con el supermercado
+4. Use emojis apropiados
+
+Responde SOLO con el texto del mensaje, sin explicaciones.`;
+
+      const result = await this.geminiModel.generateContent(prompt);
+      const response = await result.response;
+      return response.text().trim();
+    } catch (error) {
+      console.error('⚠️ Error generando respuesta Gemini:', error.message);
+      return null;
+    }
+  }
+
   generateUnknownResponse(intent, context, memory) {
-    // Respuestas variadas para no ser repetitivo
+    // Respuestas variadas con jerga selvática auténtica
     const responses = [
-      `🤔 *¡Uy, causita!* No te entendí bien.
+      `🤔 *¡Asu, ñaño!* No te entendí bien pe.
 
 💡 Puedes preguntarme por:
-• 🛒 Productos (ej: "¿tienen leche?")
+• 🛒 Productos (ej: "¿tienen plátano?")
 • 🕐 Horarios (ej: "¿a qué hora abren?")
-• 🚚 Delivery (ej: "¿hacen delivery?")
-• 📍 Ubicación (ej: "¿dónde están?")
+• 🚚 Delivery (ej: "¿mandan a domicilio?")
+• 📍 Ubicación (ej: "¿dónde quedan?")
 
-O dime directamente qué producto buscas 😊`,
+¡Dale pata, cuéntame qué necesitas! 😊`,
 
-      `😅 *¡Disculpa!* No capté bien tu mensaje.
+      `😅 *¡Disculpa pe, ñaño!* No capté tu mensaje.
 
-¿Qué te gustaría saber?
-• Escribe el nombre de un producto
+¿Qué buscas?
+• Escribe el producto que necesitas
 • Pregunta por nuestros horarios
-• Consulta sobre delivery
-• Pide nuestra dirección
+• Consulta sobre delivery a tu zona
 
-¡Estoy pa' ayudarte, causita! 💪`,
+¡Estamos pa' servirte, causa! 💪`,
 
-      `🤷 *Mmm...* no estoy seguro de entender.
+      `🤷 *¡Oe pata!* No estoy seguro de entender.
 
-Intenta de otra forma:
+Intenta así:
 • "¿Tienen [producto]?"
-• "¿Cuánto cuesta [producto]?"
+• "¿Cuánto está el [producto]?"
 • "Quiero pedir [producto]"
 
-¡Dale, cuéntame qué necesitas! 🛒`
+¡De una, cuéntame qué necesitas! 🛒`
     ];
     
     return responses[Math.floor(Math.random() * responses.length)];
