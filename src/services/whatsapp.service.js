@@ -3,6 +3,7 @@ const wppconnect = require('@wppconnect-team/wppconnect');
 const botStats = require('../utils/botStats');
 const conversationService = require('./conversation.service');
 const imageSearchService = require('./image-search.service');
+const voiceMessageService = require('./voice-message.service');
 
 /**
  * Filtra mensajes no deseados con lógica mejorada.
@@ -11,8 +12,9 @@ const imageSearchService = require('./image-search.service');
  * @returns {boolean} - True para ignorar, False para procesar.
  */
 function filterMessage(message) {
-  // 1. Ignorar si no es un mensaje de chat, imagen o documento
-  if (message.type !== 'chat' && message.type !== 'image' && message.type !== 'document') {
+  // 1. Ignorar si no es un mensaje de chat, imagen, documento o audio
+  const allowedTypes = ['chat', 'image', 'document', 'ptt', 'audio'];
+  if (!allowedTypes.includes(message.type)) {
     return true;
   }
 
@@ -60,6 +62,8 @@ async function handleMessage(message) {
   console.log(`👤 Cliente: ${senderName} (${senderId})`);
   if (messageType === 'image') {
     console.log(`🖼️ Imagen recibida${body ? ` con caption: "${body}"` : ''}`);
+  } else if (messageType === 'ptt' || messageType === 'audio') {
+    console.log(`🎙️ Mensaje de voz recibido`);
   } else {
     console.log(`📝 Mensaje: "${body}"`);
   }
@@ -75,6 +79,10 @@ async function handleMessage(message) {
       // 🖼️ BÚSQUEDA POR IMAGEN
       console.log('🖼️ Procesando imagen con Gemini Vision...');
       result = await handleImageMessage(message, senderId, botPhone, body);
+    } else if (messageType === 'ptt' || messageType === 'audio') {
+      // 🎙️ MENSAJE DE VOZ
+      console.log('🎙️ Procesando mensaje de voz con Gemini Audio...');
+      result = await handleVoiceMessage(message, senderId, botPhone);
     } else {
       // 📝 MENSAJE DE TEXTO NORMAL
       console.log('🧠 Procesando con inteligencia artificial...');
@@ -195,6 +203,113 @@ async function handleImageMessage(message, senderId, botPhone, caption) {
 }
 
 /**
+ * Maneja mensajes de voz - Transcripción y procesamiento
+ * @param {object} message - Mensaje de WhatsApp con audio
+ * @param {string} senderId - ID del remitente
+ * @param {string} botPhone - Número del bot
+ * @returns {Promise<Object>} - Resultado del procesamiento
+ */
+async function handleVoiceMessage(message, senderId, botPhone) {
+  try {
+    // 1. Notificar que estamos procesando
+    if (botStats.client) {
+      await botStats.client.sendText(senderId, '🎙️ *Escuchando tu mensaje...* dame un toque pues 🦜');
+    }
+    
+    // 2. Descargar el audio
+    console.log('📥 Descargando audio...');
+    const buffer = await botStats.client.decryptFile(message);
+    
+    if (!buffer) {
+      throw new Error('No se pudo descargar el audio');
+    }
+    
+    const mimeType = message.mimetype || 'audio/ogg';
+    console.log(`📊 Audio descargado: ${Math.round(buffer.length / 1024)}KB, tipo: ${mimeType}`);
+    
+    // 3. Procesar con el servicio de voz
+    const voiceResult = await voiceMessageService.processVoiceMessage(buffer, mimeType, senderId);
+    
+    // 4. Si la transcripción fue exitosa, procesar como texto
+    if (voiceResult.success && voiceResult.shouldProcessAsText) {
+      // Enviar confirmación de lo que entendimos
+      if (botStats.client && voiceResult.confirmationMessage) {
+        await botStats.client.sendText(senderId, voiceResult.confirmationMessage);
+      }
+      
+      // Procesar el texto transcrito como un mensaje normal
+      console.log(`🎙️ Texto transcrito: "${voiceResult.transcription}"`);
+      const textResult = await conversationService.processIncomingMessage(
+        senderId, 
+        botPhone, 
+        voiceResult.transcription
+      );
+      
+      // Guardar el mensaje de voz original en la conversación
+      const conversation = await conversationService.getOrCreateConversation(senderId, botPhone);
+      await conversationService.saveMessage(
+        conversation.id,
+        `[AUDIO] ${voiceResult.transcription}`,
+        'USER',
+        'audio'
+      );
+      
+      // Actualizar estadísticas
+      if (botStats.incrementarIntencion) {
+        botStats.incrementarIntencion('consulta_voz');
+      }
+      
+      return {
+        intent: {
+          intention: textResult.intent.intention,
+          confidence: Math.min(textResult.intent.confidence, voiceResult.confidence),
+          requires_action: textResult.intent.requires_action
+        },
+        response: textResult.response,
+        context: {
+          transcription: voiceResult.transcription,
+          voiceConfidence: voiceResult.confidence,
+          duration: voiceResult.duration,
+          ...textResult.context
+        },
+        conversationId: textResult.conversationId,
+        timestamp: new Date().toISOString()
+      };
+    }
+    
+    // 5. Si no se pudo transcribir, retornar error amigable
+    return {
+      intent: {
+        intention: 'error_voz',
+        confidence: 0,
+        requires_action: false
+      },
+      response: voiceResult.response,
+      context: { error: voiceResult.error },
+      timestamp: new Date().toISOString()
+    };
+    
+  } catch (error) {
+    console.error('❌ Error al procesar mensaje de voz:', error);
+    
+    return {
+      intent: {
+        intention: 'error_voz',
+        confidence: 0,
+        requires_action: false
+      },
+      response: `🎙️ *¡Asu, ñaño!* No pude procesar tu audio.\n\n` +
+                `Puede ser que:\n` +
+                `• El audio estaba muy corto o con mucho ruido\n` +
+                `• Hubo un problema técnico\n\n` +
+                `💡 *Tip:* Intenta enviar otro audio más claro, o escríbeme tu consulta y te ayudo al toque! 🦜`,
+      context: { error: error.message },
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+/**
  * Inicializa el cliente de WhatsApp y establece los listeners.
  */
 async function initWhatsApp() {
@@ -236,5 +351,6 @@ module.exports = {
   initWhatsApp,
   handleMessage,
   handleImageMessage,
+  handleVoiceMessage,
   filterMessage,
 };
