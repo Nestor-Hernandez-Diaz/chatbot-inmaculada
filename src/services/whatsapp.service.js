@@ -2,6 +2,7 @@
 const wppconnect = require('@wppconnect-team/wppconnect');
 const botStats = require('../utils/botStats');
 const conversationService = require('./conversation.service');
+const imageSearchService = require('./image-search.service');
 
 /**
  * Filtra mensajes no deseados con lógica mejorada.
@@ -10,7 +11,7 @@ const conversationService = require('./conversation.service');
  * @returns {boolean} - True para ignorar, False para procesar.
  */
 function filterMessage(message) {
-  // 1. Ignorar si no es un mensaje de chat (ej. cambio de foto de perfil)
+  // 1. Ignorar si no es un mensaje de chat, imagen o documento
   if (message.type !== 'chat' && message.type !== 'image' && message.type !== 'document') {
     return true;
   }
@@ -26,8 +27,9 @@ function filterMessage(message) {
     return true;
   }
 
-  // 4. Ignorar mensajes sin contenido de texto (si solo quieres procesar texto)
-  if (!message.body || message.body.trim().length === 0) {
+  // 4. Para mensajes de texto, requiere contenido
+  //    Para imágenes, no requiere body (puede tener caption opcional)
+  if (message.type === 'chat' && (!message.body || message.body.trim().length === 0)) {
     return true;
   }
 
@@ -48,26 +50,39 @@ async function handleMessage(message) {
   const senderId = message.from;
   const botPhone = message.to;
   const senderName = message.sender.pushname || message.notifyName || 'Desconocido';
-  const body = message.body;
+  const body = message.body || '';
   const timestamp = new Date(message.timestamp * 1000).toISOString();
+  const messageType = message.type;
 
   // --- Logging en consola con formato mejorado ---
   console.log('\n🤖 =========================================');
-  console.log(`[${timestamp}] 💬 Nuevo mensaje`);
+  console.log(`[${timestamp}] 💬 Nuevo mensaje (${messageType})`);
   console.log(`👤 Cliente: ${senderName} (${senderId})`);
-  console.log(`📝 Mensaje: "${body}"`);
+  if (messageType === 'image') {
+    console.log(`🖼️ Imagen recibida${body ? ` con caption: "${body}"` : ''}`);
+  } else {
+    console.log(`📝 Mensaje: "${body}"`);
+  }
   console.log('========================================= 🚀');
 
   botStats.mensajesRecibidos++;
   
   try {
-    // Procesar mensaje con IA
-    console.log('🧠 Procesando con inteligencia artificial...');
+    let result;
     
-    const result = await conversationService.processIncomingMessage(senderId, botPhone, body);
+    // Procesar según tipo de mensaje
+    if (messageType === 'image') {
+      // 🖼️ BÚSQUEDA POR IMAGEN
+      console.log('🖼️ Procesando imagen con Gemini Vision...');
+      result = await handleImageMessage(message, senderId, botPhone, body);
+    } else {
+      // 📝 MENSAJE DE TEXTO NORMAL
+      console.log('🧠 Procesando con inteligencia artificial...');
+      result = await conversationService.processIncomingMessage(senderId, botPhone, body);
+    }
     
     console.log(`🎯 Intención detectada: ${result.intent.intention} (confianza: ${result.intent.confidence})`);
-    console.log(`💡 Respuesta generada: "${result.response}"`);
+    console.log(`💡 Respuesta generada: "${result.response.substring(0, 100)}..."`);
     
     // Enviar respuesta al cliente
     if (botStats.client) {
@@ -95,6 +110,87 @@ async function handleMessage(message) {
         console.error('Error al enviar mensaje de error:', sendError);
       }
     }
+  }
+}
+
+/**
+ * Maneja mensajes de imagen - Búsqueda de productos por imagen
+ * @param {object} message - Mensaje de WhatsApp con imagen
+ * @param {string} senderId - ID del remitente
+ * @param {string} botPhone - Número del bot
+ * @param {string} caption - Caption opcional de la imagen
+ * @returns {Promise<Object>} - Resultado del procesamiento
+ */
+async function handleImageMessage(message, senderId, botPhone, caption) {
+  try {
+    // 1. Notificar que estamos procesando
+    if (botStats.client) {
+      await botStats.client.sendText(senderId, '🔍 *Analizando tu imagen...* dame unos segundos pues 🦜');
+    }
+    
+    // 2. Descargar la imagen
+    console.log('📥 Descargando imagen...');
+    const buffer = await botStats.client.decryptFile(message);
+    
+    if (!buffer) {
+      throw new Error('No se pudo descargar la imagen');
+    }
+    
+    // 3. Convertir a base64
+    const base64Image = buffer.toString('base64');
+    const mimeType = message.mimetype || 'image/jpeg';
+    
+    console.log(`📊 Imagen descargada: ${Math.round(buffer.length / 1024)}KB, tipo: ${mimeType}`);
+    
+    // 4. Analizar con Gemini Vision
+    const searchResult = await imageSearchService.analyzeProductImage(base64Image, mimeType, caption);
+    
+    // 5. Guardar en conversación
+    const conversation = await conversationService.getOrCreateConversation(senderId, botPhone);
+    await conversationService.saveMessage(
+      conversation.id, 
+      `[IMAGEN: ${searchResult.analysis?.productIdentified || 'producto no identificado'}]${caption ? ` - ${caption}` : ''}`, 
+      'USER',
+      'image'
+    );
+    await conversationService.saveMessage(conversation.id, searchResult.response, 'BOT');
+    
+    // 6. Actualizar estadísticas
+    botStats.incrementarIntencion ? botStats.incrementarIntencion('consulta_imagen') : null;
+    
+    return {
+      intent: {
+        intention: 'consulta_imagen',
+        confidence: searchResult.analysis?.confidence || 0.8,
+        requires_action: false
+      },
+      response: searchResult.response,
+      context: {
+        imageAnalysis: searchResult.analysis,
+        productsFound: searchResult.products?.length || 0
+      },
+      conversationId: conversation.id,
+      timestamp: new Date().toISOString()
+    };
+    
+  } catch (error) {
+    console.error('❌ Error al procesar imagen:', error);
+    
+    return {
+      intent: {
+        intention: 'error_imagen',
+        confidence: 0,
+        requires_action: false
+      },
+      response: `😅 *¡Uy, parcero!* No pude analizar bien tu imagen.\n\n` +
+                `Puede ser que:\n` +
+                `• La imagen esté muy oscura o borrosa\n` +
+                `• El producto no se vea claramente\n` +
+                `• El archivo sea muy grande\n\n` +
+                `💡 *Tip:* Intenta enviar una foto más clara del producto, o escríbeme qué estás buscando y te ayudo al toque! 🦜`,
+      context: { error: error.message },
+      timestamp: new Date().toISOString()
+    };
   }
 }
 
@@ -139,5 +235,6 @@ async function initWhatsApp() {
 module.exports = {
   initWhatsApp,
   handleMessage,
+  handleImageMessage,
   filterMessage,
 };
