@@ -1,94 +1,150 @@
 // prisma/schema.prisma
-// Esquema de base de datos para el Chatbot del Supermercado La Inmaculada
+// Esquema de base de datos optimizado para el Chatbot del Supermercado La Inmaculada
+// Base de datos de referencia: PostgreSQL
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // Usar variable de entorno para la URL de la base de datos
 }
 
-model Categoria {
-  id          Int        @id @default(autoincrement())
-  nombre      String     @unique
-  descripcion String?
-  icono       String?    // emoji para el chatbot
-  orden       Int        @default(0)
-  activo      Boolean    @default(true)
-  productos   Producto[]
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+//=========== Modelos de Productos y Categorías ===========
 
-  @@map("categorias")
+model Category {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  description String?
+  products    Product[]
 }
 
-model Producto {
+model Product {
+  id          Int         @id @default(autoincrement())
+  sku         String      @unique // Stock Keeping Unit (código de barras)
+  name        String
+  description String?
+  price       Decimal     @db.Decimal(10, 2) // Precisión para moneda
+  stock       Int         @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  category   Category @relation(fields: [categoryId], references: [id])
+  categoryId Int
+
+  orderItems OrderItem[]
+
+  @@index([categoryId])
+  @@index([name])
+}
+
+//=========== Modelos de Órdenes ===========
+
+model Order {
+  id        Int       @id @default(autoincrement())
+  total     Decimal   @db.Decimal(10, 2)
+  status    OrderStatus @default(PENDING)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Relación con el cliente/conversación
+  customerPhone        String
+  whatsappConversation WhatsappConversation? @relation(fields: [whatsappConversationId], references: [id])
+  whatsappConversationId Int? @unique
+
+  // Items del pedido
+  items OrderItem[]
+
+  @@index([customerPhone])
+  @@index([status])
+}
+
+model OrderItem {
+  quantity  Int
+  price     Decimal  @db.Decimal(10, 2) // Precio del producto al momento de la compra
+
+  order     Order    @relation(fields: [orderId], references: [id])
+  orderId   Int
+  product   Product  @relation(fields: [productId], references: [id])
+  productId Int
+
+  @@id([orderId, productId]) // Clave primaria compuesta para evitar duplicados
+  @@index([orderId])
+  @@index([productId])
+}
+
+enum OrderStatus {
+  PENDING          // El cliente está armando el carrito
+  CONFIRMED        // El cliente confirmó el pedido
+  PREPARING        // El pedido se está preparando en la tienda
+  READY_FOR_PICKUP // Listo para retirar
+  COMPLETED        // Pedido entregado
+  CANCELLED        // Pedido cancelado
+}
+
+
+//=========== Modelos de Conversaciones ===========
+
+model WhatsappConversation {
   id            Int       @id @default(autoincrement())
-  nombre        String
-  marca         String?
-  presentacion  String?   // "1L", "500g", "Unidad", etc.
-  precio        Float
-  precioOferta  Float?
-  stock         Int       @default(0)
-  enOferta      Boolean   @default(false)
-  activo        Boolean   @default(true)
-  categoriaId   Int
-  categoria     Categoria @relation(fields: [categoriaId], references: [id])
+  customerPhone String    // Número del cliente (ej: "54911...")
+  botPhone      String    // Número del bot
+  status        ConversationStatus @default(OPEN)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  @@index([nombre])
-  @@index([categoriaId])
-  @@map("productos")
+  messages Message[]
+  Order    Order?
+
+  @@index([customerPhone])
 }
 
-model Conversacion {
-  id            Int      @id @default(autoincrement())
-  telefono      String
-  nombreCliente String?
-  mensaje       String
-  respuesta     String?
-  intencion     String?  // "consulta_producto", "horario", "ubicacion", etc.
-  fecha         DateTime @default(now())
+model Message {
+  id        String   @id @unique // ID del mensaje de WhatsApp (wamid)
+  sender    SenderType
+  content   String   @db.Text
+  contentType String // 'text', 'image', 'audio', 'document', 'sticker'
+  timestamp DateTime
 
-  @@index([telefono])
-  @@index([fecha])
-  @@map("conversaciones")
+  conversation   WhatsappConversation @relation(fields: [conversationId], references: [id])
+  conversationId Int
+
+  @@index([conversationId])
 }
 
-model Configuracion {
-  id          Int      @id @default(autoincrement())
-  clave       String   @unique
-  valor       String
-  descripcion String?
-  updatedAt   DateTime @updatedAt
-
-  @@map("configuracion")
+enum ConversationStatus {
+  OPEN            // Conversación activa
+  CLOSED          // Conversación finalizada
+  NEEDS_ATTENTION // Requiere intervención de un humano
 }
 
-model Cliente {
-  id                Int      @id @default(autoincrement())
-  telefono          String   @unique
-  nombre            String?
-  ultimaInteraccion DateTime @default(now())
-  totalConsultas    Int      @default(0)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-
-  @@index([telefono])
-  @@map("clientes")
+enum SenderType {
+  USER // Mensaje del cliente
+  BOT  // Mensaje del chatbot
 }
 
-model MetricaDiaria {
-  id                    Int      @id @default(autoincrement())
-  fecha                 DateTime @unique
-  consultasTotales      Int      @default(0)
-  productosConsultados  Int      @default(0)
-  clientesUnicos        Int      @default(0)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
 
-  @@map("metricas_diarias")
+//=========== Modelos de Tienda y Horarios ===========
+
+model Store {
+  id      Int     @id @default(autoincrement())
+  name    String  @unique
+  address String?
+  phone   String?
+
+  hours StoreHours[]
+}
+
+model StoreHours {
+  id        Int      @id @default(autoincrement())
+  dayOfWeek Int      // 0: Domingo, 1: Lunes, ..., 6: Sábado
+  openTime  DateTime @db.Time
+  closeTime DateTime @db.Time
+
+  store   Store @relation(fields: [storeId], references: [id])
+  storeId Int
+
+  @@index([storeId])
+  @@index([dayOfWeek])
 }
