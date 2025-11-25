@@ -4,10 +4,68 @@ Este documento recoge un análisis detallado del estado actual del proyecto, su 
 
 **Resumen rápido:**
 - Propósito: Chatbot de WhatsApp para consultar productos, precios, horarios y realizar pedidos para el "Supermercado La Inmaculada".
-- Stack: Node.js + Express, Prisma (Postgres/SQLite), WPPConnect para WhatsApp, motor(s) de IA propios (módulos `ai-*.service.js`).
+- Stack: Node.js + Express, Prisma (PostgreSQL), WPPConnect para WhatsApp, **Gemini AI (gemini-2.0-flash)** para análisis contextual avanzado.
 - Punto de entrada: `src/server.js`.
+- **Estado actual**: ✅ Servidor funcionando en puerto 3000, WhatsApp conectado, 42 productos en BD.
 
-**Archivo principal**: `src/server.js` arranca Express y llama a `initWhatsApp()` para conectar con WhatsApp (WPPConnect). El servidor escucha en `process.env.PORT || 9090`.
+---
+
+## 🧠 Sistema de IA y Veracidad
+
+### Arquitectura de IA
+
+El chatbot usa un sistema híbrido de detección de intenciones:
+
+1. **Motor Local de Intenciones** (`ai-advanced.service.js`):
+   - Patrones regex para detectar intenciones con scoring
+   - Memoria conversacional por cliente (Map)
+   - Análisis de sentimiento
+   - Sistema de aprendizaje continuo
+
+2. **Gemini AI (Google)** (`gemini-2.0-flash`):
+   - Se activa cuando la confianza local < 60%
+   - Recibe SIEMPRE el catálogo REAL de la BD
+   - NUNCA inventa productos, precios o stock
+   - Usa jerga selvática de Tarapoto (ñaño, pata, causa, pe, de una, bacán)
+
+### Principio de Veracidad
+
+```
+⚠️ REGLA CRÍTICA: Gemini SIEMPRE recibe el catálogo REAL de productos
+   antes de generar cualquier respuesta sobre productos.
+```
+
+**Métodos clave:**
+- `getCatalogForGemini()`: Obtiene productos reales formateados de la BD
+- `getProductResponseFormat()`: Formato estándar obligatorio para mostrar productos
+- `ensureCatalogLoaded()`: Lazy-load del catálogo desde PostgreSQL
+
+### Formato Estándar de Productos
+
+Cuando se muestra UN producto:
+```
+📦 *[Nombre del Producto]*
+💰 Precio: S/ [precio]
+📦 Stock: [cantidad] unidades
+🏷️ Categoría: [categoría]
+```
+
+Cuando se muestra LISTA de productos:
+```
+1. *[Nombre]* - S/ [precio] 🟢/🔴
+2. *[Nombre]* - S/ [precio] 🟢/🔴
+...
+💡 ¿Cuál te llevo, ñaño?
+```
+
+### Jerga Selvática (San Martín/Tarapoto)
+
+El bot usa expresiones auténticas de la selva peruana:
+- **ñaño** / **pata** / **causa**: Formas de llamar al cliente
+- **pe**: Sufijo común ("ya pe", "claro pe")
+- **de una**: Confirmación rápida
+- **bacán**: Algo bueno
+- **asu**: Expresión de sorpresa
 
 ---
 
