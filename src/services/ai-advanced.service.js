@@ -1439,23 +1439,43 @@ Parece que preguntas sobre *${this.humanizeIntent(intent.intention)}* pero tambi
   }
   
   /**
-   * Genera respuesta de catálogo/productos disponibles
+   * Genera respuesta de catálogo/productos disponibles - CON DATOS REALES DE BD
    */
   async generateCatalogoResponse(intent, context, memory) {
+    // 🔥 SIEMPRE cargar productos REALES de la BD
     await this.ensureCatalogLoaded();
     
-    const categorias = this.businessContext.categorias_principales;
+    if (!this.productCatalog || this.productCatalog.length === 0) {
+      return `😅 *¡Asu, ñaño!* Estamos actualizando el catálogo. ¿Puedes intentar en un ratito?`;
+    }
     
-    let response = `🛒 *¡Claro que sí, causita!* Aquí te cuento qué tenemos:\n\n`;
+    // Agrupar productos REALES por categoría
+    const byCategory = {};
+    for (const product of this.productCatalog) {
+      const catName = product.category.name;
+      if (!byCategory[catName]) byCategory[catName] = [];
+      byCategory[catName].push(product);
+    }
     
-    categorias.forEach((cat, index) => {
-      const emoji = this.getCategoryEmoji(cat.nombre);
-      response += `${emoji} *${cat.nombre}*\n`;
-      response += `   ${cat.productos_destacados.slice(0, 3).join(', ')}\n\n`;
-    });
+    let response = `🛒 *¡Claro que sí, ñaño!* Aquí te cuento qué tenemos:\n\n`;
     
-    response += `💡 *¿Qué te provoca?* Dime el nombre del producto y te doy precio y stock.\n`;
-    response += `📱 También puedes decirme "quiero pedir [producto]" para hacer tu pedido.`;
+    for (const [catName, products] of Object.entries(byCategory)) {
+      const emoji = this.getCategoryEmoji(catName);
+      response += `${emoji} *${catName}*\n`;
+      
+      // Mostrar productos REALES con precios REALES
+      for (const p of products.slice(0, 3)) {
+        const stockEmoji = p.stock > 0 ? '🟢' : '🔴';
+        response += `   • ${p.name} - S/ ${p.price.toFixed(2)} ${stockEmoji}\n`;
+      }
+      response += '\n';
+    }
+    
+    response += `💡 *¿Qué te provoca, pata?* Dime el nombre del producto y te doy más info.\n`;
+    response += `📱 También puedes decir "quiero [producto]" para hacer tu pedido.`;
+    
+    // Guardar productos en memoria para referencia
+    memory.lastProducts = this.productCatalog.slice(0, 10);
     
     return response;
   }
@@ -1939,13 +1959,66 @@ ${product.description ? `📝 ${product.description}` : ''}
   }
 
   /**
+   * Obtiene el catálogo formateado para Gemini (con formato estándar)
+   */
+  async getCatalogForGemini() {
+    await this.ensureCatalogLoaded();
+    if (!this.productCatalog || this.productCatalog.length === 0) {
+      return 'CATÁLOGO VACÍO - No hay productos disponibles';
+    }
+    
+    // Agrupar por categoría con formato estándar
+    const byCategory = {};
+    for (const p of this.productCatalog) {
+      const cat = p.category.name;
+      if (!byCategory[cat]) byCategory[cat] = [];
+      byCategory[cat].push(p);
+    }
+    
+    let catalog = '📦 CATÁLOGO REAL DE LA INMACULADA:\n';
+    for (const [cat, products] of Object.entries(byCategory)) {
+      catalog += `\n🏷️ ${cat}:\n`;
+      for (const p of products) {
+        const stockEmoji = p.stock > 0 ? '🟢' : '🔴';
+        catalog += `  • ${p.name} - S/ ${p.price.toFixed(2)} ${stockEmoji} (${p.stock} disponibles)\n`;
+      }
+    }
+    
+    return catalog;
+  }
+
+  /**
+   * FORMATO ESTÁNDAR para mostrar productos al cliente
+   */
+  getProductResponseFormat() {
+    return `
+FORMATO ESTÁNDAR DE RESPUESTA (OBLIGATORIO):
+- Cuando muestres UN producto:
+  📦 *[Nombre del Producto]*
+  💰 Precio: S/ [precio]
+  📦 Stock: [cantidad] unidades
+  🏷️ Categoría: [categoría]
+  
+- Cuando muestres LISTA de productos:
+  1. *[Nombre]* - S/ [precio] [🟢 si hay stock / 🔴 si no]
+  2. *[Nombre]* - S/ [precio] [emoji]
+  ...
+  
+  Termina con: "¿Cuál te llevo, ñaño?"
+
+- JERGA OBLIGATORIA: "ñaño", "pata", "causa", "pe", "de una", "bacán"
+`;
+  }
+
+  /**
    * Usa Gemini para interpretar qué producto busca el cliente
    */
   async interpretProductSearchWithGemini(message, conversationHistory = []) {
     if (!this.geminiEnabled) return null;
     
     try {
-      // Obtener lista de productos disponibles
+      // Obtener lista de productos disponibles CON FORMATO
+      const productCatalog = await this.getCatalogForGemini();
       await this.ensureCatalogLoaded();
       const productList = this.productCatalog.map(p => `${p.name} (${p.category.name})`).join(', ');
       
@@ -1953,27 +2026,40 @@ ${product.description ? `📝 ${product.description}` : ''}
 Eres un asistente de un supermercado en Tarapoto, Perú (selva).
 El cliente dice: "${message}"
 
-PRODUCTOS DISPONIBLES:
-${productList}
+⚠️ CATÁLOGO REAL (SOLO PUEDES SUGERIR ESTOS PRODUCTOS):
+${productCatalog}
+
+🚨 REGLAS CRÍTICAS:
+1. SOLO sugiere productos que EXISTEN en el catálogo de arriba
+2. NUNCA inventes productos, precios o stock
+3. Si no hay un producto exacto, sugiere el más SIMILAR del catálogo
+4. Si no hay nada similar, responde que no tenemos ese producto
 
 INSTRUCCIONES:
 1. Interpreta qué PRODUCTO o CATEGORÍA busca el cliente
 2. Si menciona contexto (ej: "hace calor", "fiesta", "dulce"), deduce qué necesita
-3. Si no hay producto exacto, sugiere la categoría más cercana
+3. BUSCA en el catálogo y sugiere SOLO productos que EXISTEN
 
 Responde SOLO con JSON:
 {
-  "product_search": "término de búsqueda exacto para encontrar el producto",
-  "category": "Bebidas|Lácteos|Carnes|Golosinas|Limpieza|Higiene|Frutas|Verduras|Abarrotes",
+  "product_search": "término de búsqueda",
+  "category": "Bebidas|Lácteos y Huevos|Panadería|Limpieza del Hogar",
   "interpretation": "qué crees que busca el cliente",
   "confidence": 0.85,
-  "suggested_products": ["nombre exacto producto 1", "nombre exacto producto 2"]
+  "suggested_products": ["NOMBRE EXACTO del producto del catálogo"],
+  "product_exists": true
 }
 
-EJEMPLOS:
-- "hace calor, q tienes para tomar" → {"product_search": "bebidas", "category": "Bebidas", "suggested_products": ["Coca Cola 3L", "Inka Cola 3L", "Agua San Mateo 2.5L"]}
-- "algo dulce" → {"product_search": "chocolate", "category": "Golosinas", "suggested_products": ["Chocolate Sublime 50g", "Galletas Glacitas 150g"]}
-- "para mi juane" → {"product_search": "pollo", "category": "Carnes", "suggested_products": ["Pollo Entero Fresco 2.5kg"]}`;
+Si NO existe el producto en el catálogo, responde:
+{
+  "product_search": "...",
+  "category": "...",
+  "interpretation": "...",
+  "confidence": 0.5,
+  "suggested_products": [],
+  "product_exists": false,
+  "alternative_message": "Disculpa ñaño, no tenemos [producto]. ¿Te ofrezco algo de [categoría más cercana]?"
+}`;
 
       const result = await this.geminiModel.generateContent(prompt);
       const text = result.response.text();
@@ -3011,6 +3097,10 @@ ${statusEmoji} ${statusText}
     }
 
     try {
+      // 🔥 CARGAR CATÁLOGO REAL DE LA BD
+      const productCatalog = await this.getCatalogForGemini();
+      const formatGuide = this.getProductResponseFormat();
+      
       const historyContext = conversationHistory.length > 0
         ? `Historial reciente:\n${conversationHistory.map(m => `${m.sender}: ${m.content}`).join('\n')}`
         : 'Sin historial previo';
@@ -3019,9 +3109,13 @@ ${statusEmoji} ${statusText}
 Eres un asistente del Supermercado La Inmaculada en Tarapoto, San Martín, Perú.
 Hablas con jerga de la SELVA PERUANA: "ñaño", "pata", "causa", "pe", "de una", "bacán", "asu".
 
+⚠️ CATÁLOGO REAL DE PRODUCTOS (SOLO ESTOS EXISTEN):
+${productCatalog}
+
+${formatGuide}
+
 CONTEXTO DEL NEGOCIO:
 - Supermercado familiar en Tarapoto
-- Productos frescos locales: plátano, yuca, pescado amazónico, camu camu, aguaje
 - Horarios: Lun-Sáb 7am-9pm, Dom 8am-2pm
 - Delivery disponible en Tarapoto, Banda de Shilcayo, Morales
 - Métodos de pago: Efectivo, Yape, Plin, tarjeta
@@ -3030,21 +3124,28 @@ ${historyContext}
 
 MENSAJE DEL CLIENTE: "${message}"
 
+🚨 REGLAS CRÍTICAS:
+1. SOLO menciona productos del CATÁLOGO REAL de arriba
+2. NUNCA inventes productos, precios o stock
+3. Usa SIEMPRE el formato estándar para mostrar productos
+4. Si piden algo que no existe, ofrece alternativas del catálogo
+
 Responde en JSON con este formato EXACTO:
 {
   "intention": "saludo|consulta_producto|consulta_precio|pedido|ver_catalogo|horarios|ubicacion|delivery|despedida|agradecimiento|otro",
   "confidence": 0.95,
-  "product_mentioned": "nombre del producto o null",
+  "product_mentioned": "NOMBRE EXACTO del catálogo o null",
   "quantity": "cantidad mencionada o null",
   "customer_need": "qué necesita el cliente en una frase corta",
-  "suggested_response": "respuesta corta y amigable con jerga selvática (máx 3 líneas)",
-  "follow_up_question": "pregunta de seguimiento si es necesaria o null"
+  "suggested_response": "respuesta usando FORMATO ESTÁNDAR con jerga selvática",
+  "follow_up_question": "pregunta de seguimiento si es necesaria o null",
+  "products_from_catalog": ["lista de productos EXACTOS del catálogo mencionados"]
 }
 
 IMPORTANTE: 
 - Usa jerga selvática natural: "ñaño", "pata", "pe", "de una", "bacán"
-- Sé amable y cercano como un vendedor de la selva
-- Si el cliente pregunta algo ambiguo, interpreta según el contexto del supermercado`;
+- Los precios y stock DEBEN coincidir con el catálogo real
+- Si el cliente pide algo que no tenemos, dile amablemente y ofrece alternativas`;
 
       const result = await this.geminiModel.generateContent(prompt);
       const response = await result.response;
@@ -3073,6 +3174,10 @@ IMPORTANTE:
     }
 
     try {
+      // 🔥 CARGAR CATÁLOGO REAL
+      const productCatalog = await this.getCatalogForGemini();
+      const formatGuide = this.getProductResponseFormat();
+      
       const memoryContext = memory ? 
         `Estado actual: ${memory.currentState}, Producto seleccionado: ${memory.selectedProduct?.name || 'ninguno'}` : 
         'Sin contexto previo';
@@ -3080,6 +3185,11 @@ IMPORTANTE:
       const prompt = `
 Eres el asistente virtual del Supermercado La Inmaculada en Tarapoto, Perú.
 Tu personalidad es amigable, cercana y usas expresiones de la SELVA PERUANA.
+
+⚠️ CATÁLOGO REAL (SOLO ESTOS PRODUCTOS EXISTEN):
+${productCatalog}
+
+${formatGuide}
 
 EXPRESIONES QUE DEBES USAR:
 - "ñaño" o "pata" para referirte al cliente
@@ -3094,11 +3204,17 @@ Sentimiento del cliente: ${context.sentiment?.sentiment || 'neutral'}
 
 MENSAJE DEL CLIENTE: "${message}"
 
-Genera una respuesta corta (máximo 4 líneas) que:
+🚨 REGLAS CRÍTICAS:
+1. SOLO menciona productos que EXISTEN en el catálogo
+2. Los precios y stock DEBEN ser los del catálogo real
+3. Si piden algo que no tenemos, di "no tenemos [X], pero te ofrezco..."
+4. Usa el FORMATO ESTÁNDAR para mostrar productos
+
+Genera una respuesta (máximo 4 líneas) que:
 1. Sea amigable y use jerga selvática
-2. Intente entender qué necesita el cliente
-3. Ofrezca ayuda concreta relacionada con el supermercado
-4. Use emojis apropiados
+2. Responda con información REAL del catálogo
+3. Use emojis apropiados
+4. Siga el FORMATO ESTÁNDAR si muestra productos
 
 Responde SOLO con el texto del mensaje, sin explicaciones.`;
 

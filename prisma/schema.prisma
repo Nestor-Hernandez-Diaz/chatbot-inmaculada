@@ -1,17 +1,11 @@
-// prisma/schema.prisma
-// Esquema de base de datos optimizado para el Chatbot del Supermercado La Inmaculada
-// Base de datos de referencia: PostgreSQL
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL") // Usar variable de entorno para la URL de la base de datos
+  url      = env("DATABASE_URL")
 }
-
-//=========== Modelos de Productos y Categorías ===========
 
 model Category {
   id          Int       @id @default(autoincrement())
@@ -22,39 +16,31 @@ model Category {
 
 model Product {
   id          Int         @id @default(autoincrement())
-  sku         String      @unique // Stock Keeping Unit (código de barras)
+  sku         String      @unique
   name        String
   description String?
-  price       Decimal     @db.Decimal(10, 2) // Precisión para moneda
+  price       Decimal     @db.Decimal(10, 2)
   stock       Int         @default(0)
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
-
-  category   Category @relation(fields: [categoryId], references: [id])
-  categoryId Int
-
-  orderItems OrderItem[]
+  categoryId  Int
+  orderItems  OrderItem[]
+  category    Category    @relation(fields: [categoryId], references: [id])
 
   @@index([categoryId])
   @@index([name])
 }
 
-//=========== Modelos de Órdenes ===========
-
 model Order {
-  id        Int       @id @default(autoincrement())
-  total     Decimal   @db.Decimal(10, 2)
-  status    OrderStatus @default(PENDING)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-
-  // Relación con el cliente/conversación
-  customerPhone        String
-  whatsappConversation WhatsappConversation? @relation(fields: [whatsappConversationId], references: [id])
-  whatsappConversationId Int? @unique
-
-  // Items del pedido
-  items OrderItem[]
+  id                     Int                   @id @default(autoincrement())
+  total                  Decimal               @db.Decimal(10, 2)
+  status                 OrderStatus           @default(PENDING)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  customerPhone          String
+  whatsappConversationId Int?                  @unique
+  whatsappConversation   WhatsappConversation? @relation(fields: [whatsappConversationId], references: [id])
+  items                  OrderItem[]
 
   @@index([customerPhone])
   @@index([status])
@@ -62,89 +48,78 @@ model Order {
 
 model OrderItem {
   quantity  Int
-  price     Decimal  @db.Decimal(10, 2) // Precio del producto al momento de la compra
-
-  order     Order    @relation(fields: [orderId], references: [id])
+  price     Decimal @db.Decimal(10, 2)
   orderId   Int
-  product   Product  @relation(fields: [productId], references: [id])
   productId Int
+  order     Order   @relation(fields: [orderId], references: [id])
+  product   Product @relation(fields: [productId], references: [id])
 
-  @@id([orderId, productId]) // Clave primaria compuesta para evitar duplicados
+  @@id([orderId, productId])
   @@index([orderId])
   @@index([productId])
 }
 
-enum OrderStatus {
-  PENDING          // El cliente está armando el carrito
-  CONFIRMED        // El cliente confirmó el pedido
-  PREPARING        // El pedido se está preparando en la tienda
-  READY_FOR_PICKUP // Listo para retirar
-  COMPLETED        // Pedido entregado
-  CANCELLED        // Pedido cancelado
-}
-
-
-//=========== Modelos de Conversaciones ===========
-
 model WhatsappConversation {
-  id            Int       @id @default(autoincrement())
-  customerPhone String    // Número del cliente (ej: "54911...")
-  botPhone      String    // Número del bot
+  id            Int                @id @default(autoincrement())
+  customerPhone String
+  botPhone      String
   status        ConversationStatus @default(OPEN)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  messages Message[]
-  Order    Order?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  messages      Message[]
+  Order         Order?
 
   @@index([customerPhone])
 }
 
 model Message {
-  id        String   @id @unique // ID del mensaje de WhatsApp (wamid)
-  sender    SenderType
-  content   String   @db.Text
-  contentType String // 'text', 'image', 'audio', 'document', 'sticker'
-  timestamp DateTime
-
-  conversation   WhatsappConversation @relation(fields: [conversationId], references: [id])
+  id             String               @id @unique
+  sender         SenderType
+  content        String
+  contentType    String
+  timestamp      DateTime
   conversationId Int
+  conversation   WhatsappConversation @relation(fields: [conversationId], references: [id])
 
   @@index([conversationId])
 }
 
-enum ConversationStatus {
-  OPEN            // Conversación activa
-  CLOSED          // Conversación finalizada
-  NEEDS_ATTENTION // Requiere intervención de un humano
-}
-
-enum SenderType {
-  USER // Mensaje del cliente
-  BOT  // Mensaje del chatbot
-}
-
-
-//=========== Modelos de Tienda y Horarios ===========
-
 model Store {
-  id      Int     @id @default(autoincrement())
-  name    String  @unique
+  id      Int          @id @default(autoincrement())
+  name    String       @unique
   address String?
   phone   String?
-
-  hours StoreHours[]
+  hours   StoreHours[]
 }
 
 model StoreHours {
   id        Int      @id @default(autoincrement())
-  dayOfWeek Int      // 0: Domingo, 1: Lunes, ..., 6: Sábado
-  openTime  DateTime @db.Time
-  closeTime DateTime @db.Time
-
-  store   Store @relation(fields: [storeId], references: [id])
-  storeId Int
+  dayOfWeek Int
+  openTime  DateTime @db.Time(6)
+  closeTime DateTime @db.Time(6)
+  storeId   Int
+  store     Store    @relation(fields: [storeId], references: [id])
 
   @@index([storeId])
   @@index([dayOfWeek])
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY_FOR_PICKUP
+  COMPLETED
+  CANCELLED
+}
+
+enum ConversationStatus {
+  OPEN
+  CLOSED
+  NEEDS_ATTENTION
+}
+
+enum SenderType {
+  USER
+  BOT
 }
